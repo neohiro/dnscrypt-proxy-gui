@@ -407,7 +407,6 @@ class DNSCryptClientGUI:
     def toggle_activation(self):
         # Prevent starting a new action if one is already running
         if not self.action_lock.acquire(blocking=False):
-            self.status_var.set("Operation in progress, please wait...")
             return
 
         def task():
@@ -435,7 +434,6 @@ class DNSCryptClientGUI:
         self.save_settings()
         if self.active_server_info:
             if not self.action_lock.acquire(blocking=False):
-                self.status_var.set("Operation in progress, please wait...")
                 return
             
             def task():
@@ -590,7 +588,6 @@ class DNSCryptClientGUI:
 
     def start_fetch(self):
         if not self.action_lock.acquire(blocking=False):
-            self.status_var.set("Operation in progress, please wait...")
             return
 
         self.fetch_button.config(state=tk.DISABLED)
@@ -673,17 +670,47 @@ class DNSCryptClientGUI:
             self.details_text.insert(tk.END, details); self.details_text.configure(state='disabled')
 
 if __name__ == "__main__":
+    # Set the current working directory to the script's directory. This is crucial
+    # for locating the dnscrypt-proxy executable and config files.
+    if getattr(sys, 'frozen', False):
+        application_path = os.path.dirname(sys.executable)
+    else:
+        application_path = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(application_path)
+    
     if not is_admin():
         try:
             if platform.system() == "Windows":
                 import ctypes
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+                # The parameters for the new process must include the script's own path.
+                # We also robustly quote each argument to handle paths with spaces.
+                params = " ".join([f'"{arg}"' for arg in sys.argv])
+                
+                # Attempt to re-launch with admin privileges.
+                hinstance = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+                
+                # If the re-launch fails (e.g., user clicks "No" on UAC), show an error.
+                if hinstance <= 32:
+                    error_message = (
+                        f"This application requires administrator privileges to run.\n\n"
+                        f"The attempt to automatically elevate failed with error code: {hinstance}\n\n"
+                        f"Please right-click the application and select 'Run as administrator'."
+                    )
+                    # Use the native Windows MessageBoxW for the error dialog, as Tkinter isn't initialized.
+                    # 0x10 is MB_ICONERROR, 0x0 is MB_OK.
+                    ctypes.windll.user32.MessageBoxW(None, error_message, "Administrator Privileges Required", 0x10 | 0x0)
             else:
-                os.execvp('sudo', ['sudo', '-v'] + [sys.executable] + sys.argv)
+                # Non-Windows elevation logic remains the same.
+                os.execvp('sudo', ['sudo', sys.executable] + sys.argv)
         except Exception as e:
-            print(f"Failed to elevate privileges: {e}")
-        finally: sys.exit(0)
+            # Catch any other unexpected exceptions during elevation.
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, f"An unexpected error occurred while trying to elevate privileges:\n\n{e}", "Startup Error", 0x10 | 0x0)
+        finally:
+            # The original non-admin instance must always exit.
+            sys.exit(0)
     
+    # If we've reached this point, we are running with admin privileges.
     app_root = tk.Tk()
     gui = DNSCryptClientGUI(app_root)
     app_root.mainloop()
