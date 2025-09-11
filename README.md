@@ -72,12 +72,16 @@ Get the Code: Clone this repository or download the DNSCRYPTCLIENT.py script.
 Shell
 
 git clone https://github.com/your-username/your-repo-name.git
+
 cd your-repo-name
+
 Place the Executable: Make sure your directory looks like this:
 
 .
 ├── DNSCRYPTCLIENT.py       # The script you downloaded
+
 └── dnscrypt-proxy.exe      # The official executable (or `dnscrypt-proxy` on Linux/macOS)
+
 Run the Script: Execute the script from your terminal. It will request administrator privileges.
 
 Shell
