@@ -77,7 +77,6 @@ cd dnscrypt-proxy-gui
 
 Place the Executable: Make sure your directory looks like this:
 
-.
 ├── DNSCRYPTCLIENT.py       # The script you downloaded
 
 └── dnscrypt-proxy.exe      # The official executable (or `dnscrypt-proxy` on Linux/macOS)
