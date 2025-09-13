@@ -7,7 +7,7 @@ A simple, powerful, and cross-platform GUI wrapper for the official dnscrypt-pro
 ### About The Project
 dnscrypt-proxy is a fantastic command-line tool for securing DNS communications, but its power can be daunting for users who prefer a graphical interface. This project provides a user-friendly Python and Tkinter-based client that acts as a complete controller for the dnscrypt-proxy executable.
 
-It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background.
+It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background. You can also use this GUI to set up the .TOML file and use dnscrypt-proxy without this GUI after that.
 
 ### Features ✨
 - Browse & Sort Servers: Fetches the latest public DNSCrypt resolver list and displays it in an easy-to-sort table.
