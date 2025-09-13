@@ -1,5 +1,5 @@
 # dnscrypt-proxy-gui
-A simple GUI to set up dnscrypt-proxy
+A simple GUI to set up [https://github.com/dnscrypt-proxy dnscrypt-proxy]
 
 ## DNSCrypt Client GUI 🛡️
 A simple, powerful, and cross-platform GUI wrapper for the official dnscrypt-proxy, allowing you to easily browse, configure, and secure your system's DNS traffic.
