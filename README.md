@@ -71,9 +71,9 @@ Get the Code: Clone this repository or download the DNSCRYPTCLIENT.py script.
 
 Shell
 
-git clone https://github.com/your-username/your-repo-name.git
+git clone https://github.com/neohiro/dnscrypt-proxy-gui.git
 
-cd your-repo-name
+cd dnscrypt-proxy-gui
 
 Place the Executable: Make sure your directory looks like this:
 
