@@ -2,7 +2,7 @@
 A simple GUI to set up [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy)
 
 ## DNSCrypt Client GUI 🛡️
-A simple, powerful, and cross-platform GUI wrapper for the official dnscrypt-proxy, allowing you to easily browse, configure, and secure your system's DNS traffic.
+A powerful and cross-platform GUI wrapper for the official dnscrypt-proxy, allowing you to easily browse, configure, and secure your system's DNS traffic.
 
 ### About The Project
 dnscrypt-proxy is a fantastic command-line tool for securing DNS communications, but its power can be daunting for users who prefer a graphical interface. This project provides a user-friendly Python and Tkinter-based client that acts as a complete controller for the dnscrypt-proxy executable.
