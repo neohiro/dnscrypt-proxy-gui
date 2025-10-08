@@ -116,7 +116,7 @@ If you have a suggestion that would make this better, please fork the repo and c
 - Open a Pull Request
 
 ## License
-Distributed under the ICS License, in parallel with dnscrypt-proxy itself. See LICENSE for more information.
+Distributed under the ISC License, in parallel with dnscrypt-proxy itself. See LICENSE for more information.
 
 ## Acknowledgments
 A huge thank you to the DNSCrypt team for creating and maintaining the incredible dnscrypt-proxy project.
