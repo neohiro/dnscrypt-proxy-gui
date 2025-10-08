@@ -53,6 +53,8 @@ This application is a Python wrapper that automates the entire process of using 
 Follow these steps to get the client up and running on your system.
 
 ### Prerequisites
+>> You can use the .exe file on Windows directly. For Linux:
+
 Python 3.x: Ensure you have Python installed. You can download it from python.org.
 
 dnscrypt-proxy Executable: This client controls the official proxy; it does not include it.
