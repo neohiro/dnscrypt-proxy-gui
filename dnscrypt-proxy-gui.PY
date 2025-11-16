@@ -555,28 +555,59 @@ class DNSCryptClientGUI:
         creation_flags = subprocess.CREATE_NO_WINDOW if system == "Windows" else 0
         try:
             if system == "Windows":
-                for interface in ["Wi-Fi", "Ethernet"]:
-                    subprocess.run(f'netsh interface ipv4 set dns name="{interface}" static {dns_server}', check=True, capture_output=True, text=True, creationflags=creation_flags)
+                # This command finds all IP-enabled adapters (Wi-Fi, Ethernet, etc.)
+                # and sets their DNS server.
+                subprocess.run(
+                    f'wmic nicconfig where "IPEnabled=TRUE" call SetDNSServerSearchOrder ("{dns_server}")',
+                    check=True, capture_output=True, text=True, creationflags=creation_flags
+                )
             elif system == "Darwin":
-                subprocess.run(['networksetup', '-setdnsservers', 'Wi-Fi', dns_server], check=True)
+                # This finds all network services (Wi-Fi, Ethernet, etc.) and applies the setting.
+                result = subprocess.run(['networksetup', '-listallnetworkservices'], check=True, capture_output=True, text=True)
+                services = result.stdout.splitlines()
+                for service in services[1:]: # Skip the header line
+                    service = service.strip()
+                    if service and not service.startswith('*'): # Check if not empty and not disabled
+                        # We intentionally don't use check=True here,
+                        # as some services (e.g., Bluetooth) can't have DNS set and will error.
+                        subprocess.run(['networksetup', '-setdnsservers', service, dns_server], capture_output=True, text=True)
             elif system == "Linux":
+                # This is a system-wide change, already generic.
                 with open("/etc/resolv.conf", "w") as f: f.write(f"nameserver {dns_server}\n")
+            
+            # If we got this far without a 'check=True' error, we succeeded.
             return True
+        
         except (subprocess.CalledProcessError, PermissionError, FileNotFoundError) as e:
-            print(f"Failed to set DNS for an interface: {e}")
-        return True
+            print(f"Failed to set DNS: {e}")
+            # Print stderr if available, it's very useful for debugging
+            if hasattr(e, 'stderr'):
+                print(f"Details: {e.stderr}")
+            return False
 
     def revert_system_dns(self):
         system = platform.system()
         creation_flags = subprocess.CREATE_NO_WINDOW if system == "Windows" else 0
         try:
             if system == "Windows":
-                 for interface in ["Wi-Fi", "Ethernet"]:
-                    subprocess.run(f'netsh interface ipv4 set dns name="{interface}" dhcp', check=True, capture_output=True, text=True, creationflags=creation_flags)
+                 # This command finds all IP-enabled adapters and tells them to use DHCP for DNS.
+                 subprocess.run(
+                     'wmic nicconfig where "IPEnabled=TRUE" call EnableDHCP',
+                     check=True, capture_output=True, text=True, creationflags=creation_flags
+                 )
             elif system == "Darwin":
-                subprocess.run(['networksetup', '-setdnsservers', 'Wi-Fi', 'empty'], check=True)
+                # This finds all network services and tells them to use DHCP for DNS ("empty").
+                result = subprocess.run(['networksetup', '-listallnetworkservices'], check=True, capture_output=True, text=True)
+                services = result.stdout.splitlines()
+                for service in services[1:]: # Skip the header line
+                    service = service.strip()
+                    if service and not service.startswith('*'): # Check if not empty and not disabled
+                        # We intentionally don't use check=True here
+                        subprocess.run(['networksetup', '-setdnsservers', service, 'empty'], capture_output=True, text=True)
             elif system == "Linux":
                 if os.path.exists("/etc/resolv.conf"): os.remove("/etc/resolv.conf")
+                # This symlink command is specific and might not be universal,
+                # but it was what the user had.
                 os.symlink('/run/systemd/resolve/stub-resolv.conf', '/etc/resolv.conf')
         except Exception as e:
             self.root.after(0, lambda: messagebox.showwarning("DNS Revert Failed", f"Could not automatically revert DNS settings: {e}\n\nPlease set your network adapter to obtain DNS automatically."))
