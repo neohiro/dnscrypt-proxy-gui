@@ -1,5 +1,5 @@
 # dnscrypt-proxy-gui
-A simple GUI to set up [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy) on Windows, MacOS or Linux.
+A GUI to set up [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy) on Windows, MacOS or Linux.
 
 ## DNSCrypt Client GUI 🛡️
 A powerful and cross-platform GUI wrapper for the official dnscrypt-proxy, allowing you to easily browse, configure, and secure your system's DNS traffic.
@@ -9,7 +9,7 @@ dnscrypt-proxy is a fantastic tool for securing DNS communications, but its powe
 
 It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background. You can also use this GUI to set up the .TOML file and use dnscrypt-proxy without after that.
 
-<img width="1000" height="829" alt="image" src="https://github.com/user-attachments/assets/ec3ada92-6cb6-46d6-b500-eeb099fbe6d8" />
+<img width="1100" height="881" alt="dnscrypt-proxy-gui" src="https://github.com/user-attachments/assets/72e0f471-17be-4dd2-be01-21a6f0c43cbb" />
 
 ### Features ✨
 - Browse & Sort Servers: Fetches the latest public DNSCrypt resolver list and displays it in an easy-to-sort table.
