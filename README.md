@@ -16,6 +16,8 @@ It allows you to fetch the latest public resolver lists, select one or more serv
 
 - Multi-Server Activation: Select and activate multiple servers simultaneously for enhanced reliability and speed.
 
+- Apply anonimizing relays to dnscrypt servers
+
 - Live Status Indicator: A clear visual indicator shows whether the service is ACTIVE or INACTIVE.
 
 - System Tray Integration: Hides the main window to a tray icon, allowing the client to run unobtrusively in the background.
