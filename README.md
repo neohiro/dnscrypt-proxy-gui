@@ -9,7 +9,7 @@ dnscrypt-proxy is a fantastic tool for securing DNS communications, but its powe
 
 It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background. You can also use this GUI to set up the .TOML file and use the dnscrypt-proxy service directly.
 
-<img width="1100" height="881" alt="dnscrypt-proxy-gui" src="https://github.com/user-attachments/assets/72e0f471-17be-4dd2-be01-21a6f0c43cbb" />
+<img width="1100" height="880" alt="image" src="https://github.com/user-attachments/assets/57e73919-cfdd-418a-a92d-7e0b6dd51caf" />
 
 ### Features ✨
 - Browse & Sort Servers: Fetches the latest public DNSCrypt resolver list and displays it in an easy-to-sort table.
