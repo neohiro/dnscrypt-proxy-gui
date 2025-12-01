@@ -700,7 +700,7 @@ class DNSCryptClientGUI:
         self.root.after(0, final_success_ui)
         self.save_settings()
 
-    def deactivate_dns(self):
+    def deactivate_dns(self, save_state=True):
         def update_ui_state():
             self.status_var.set("Deactivating...")
             self.activate_button.config(state=tk.DISABLED)
@@ -722,7 +722,11 @@ class DNSCryptClientGUI:
 
         # DISABLE AUTO-DELETE so user can debug the generated file
         # if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
-        self.save_settings()
+        
+        # Only save "was_active = False" if explicitly requested.
+        # This prevents system shutdown from overwriting the desired active state.
+        if save_state:
+            self.save_settings()
 
     def set_system_dns(self, dns_server):
         system = platform.system()
@@ -781,7 +785,9 @@ class DNSCryptClientGUI:
 
     def cleanup(self):
         if self.active_server_info:
-            self.deactivate_dns()
+            # Revert DNS to prevent connection loss, but DO NOT save the state as "inactive".
+            # This ensures that on the next startup, the app still sees "was_active": True.
+            self.deactivate_dns(save_state=False)
 
     def start_fetch(self):
         if not self.action_lock.acquire(blocking=False):
