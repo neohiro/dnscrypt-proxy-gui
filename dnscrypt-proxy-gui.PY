@@ -667,7 +667,7 @@ class DNSCryptClientGUI:
             f'require_nolog = {str(self.require_nolog_var.get()).lower()}',
             f'require_nofilter = {str(self.require_nofilter_var.get()).lower()}', 
             'ignore_system_dns = true',
-            "fallback_resolver = '9.9.9.9:53'", # CRITICAL FIX: Fallback prevents total lockout
+            # REMOVED: "fallback_resolver = '9.9.9.9:53'" as it is invalid format (must be a stamp)
             '',
             '# --- Cache ---', 
             'cache = true', 
