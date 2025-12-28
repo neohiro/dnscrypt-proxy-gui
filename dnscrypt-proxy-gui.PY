@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-import requests
+# import requests # Moved to local scope for faster startup
 import threading
 import os
 import sys
@@ -17,8 +17,6 @@ try:
     from PIL import Image, ImageTk
 except ImportError:
     try:
-        # Fallback if imports fail, though in a real app better to handle gracefully
-        # pass to allow GUI to at least try to load if libs are missing (but tray won't work)
         pass
     except:
         pass
@@ -36,7 +34,6 @@ CACHE_FILE_NAME = "server_cache.json"
 ICON_FILE = "icon.ico"
 
 # --- Console Suppression Helper ---
-# Modified: We only suppress if frozen, otherwise we want to see errors in IDE
 if sys.platform == "win32" and getattr(sys, 'frozen', False):
     class NullWriter:
         def write(self, data): pass
@@ -102,7 +99,6 @@ class DNSCryptClientGUI:
         self.startup_var = tk.BooleanVar()
         self.start_minimized_var = tk.BooleanVar()
 
-        # Determine Absolute Paths
         if getattr(sys, 'frozen', False):
             self.base_path = os.path.dirname(sys.executable)
         else:
@@ -113,14 +109,11 @@ class DNSCryptClientGUI:
 
         self.settings = self.load_settings() 
         
-        # Load preferred servers
         self.preferred_servers = self.settings.get("last_active_servers", [])
         
-        # Load UI State
         self.protocol_filter_var.set(self.settings.get("ui_filter_protocol", "All Protocols"))
         self.start_minimized_var.set(self.settings.get("ui_start_minimized", False))
         
-        # --- Multi-Column Sort Persistence ---
         self.sort_stack = self.settings.get("ui_sort_stack", [])
         self.sort_dirs = self.settings.get("ui_sort_dirs", {})
 
@@ -133,8 +126,11 @@ class DNSCryptClientGUI:
         self.cache_min_ttl_var.set(self.settings.get("cache_min_ttl", "60"))
         self.server_relay_map = self.settings.get("server_relay_map", {})
 
-        # --- FIX: Clean State on Init ---
-        self.revert_system_dns()
+        # --- FIX: Clean State on Init (Threaded) ---
+        def safe_init_cleanup():
+            with self.action_lock:
+                self.revert_system_dns()
+        threading.Thread(target=safe_init_cleanup, daemon=True).start()
 
         atexit.register(self.cleanup)
         
@@ -247,7 +243,6 @@ class DNSCryptClientGUI:
         columns = ("name", "type", "via", "no-log", "dnssec", "no-filter")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="extended")
         
-        # --- Configure Zebra Striping Tags ---
         self.tree.tag_configure('oddrow', background='#f0f0f0')
         self.tree.tag_configure('evenrow', background='white')
         
@@ -399,7 +394,6 @@ class DNSCryptClientGUI:
                 self.tray_icon.run() 
                 with self.tray_lock: self.tray_icon = None
             except Exception as e:
-                # If tray fails, just destroy app
                 print(f"Tray error: {e}")
                 self.quit_app()
 
@@ -512,7 +506,6 @@ class DNSCryptClientGUI:
             reverse = self.sort_dirs.get(col, False)
             data_rows.sort(key=lambda x: str(x[1][col]).lower(), reverse=reverse)
         
-        # Move items and re-apply alternating colors
         for index, (iid, _) in enumerate(data_rows):
             self.tree.move(iid, '', index)
             tag = 'oddrow' if index % 2 != 0 else 'evenrow'
@@ -541,7 +534,6 @@ class DNSCryptClientGUI:
             if isinstance(relays, str): relays = [relays] if relays else []
             values = (server["name"], server.get('proto_type', '?'), ", ".join(relays), server["no-log"], server["dnssec"], server["no-filter"])
             
-            # Apply alternating row colors
             tag = 'oddrow' if i % 2 != 0 else 'evenrow'
             self.tree.insert("", tk.END, values=values, iid=server["name"], tags=(tag,))
             
@@ -642,19 +634,15 @@ class DNSCryptClientGUI:
         ttk.Button(btn_frame, text="Apply Bridge(s)", command=confirm_selection).pack(side=tk.RIGHT)
 
     def _clean_server_name(self, name):
-        """Sanitizes server names to be safe for TOML keys."""
-        # Remove anything that isn't alphanumeric or underscore
         clean = re.sub(r'[^a-zA-Z0-9_]', '', name)
         return clean if clean else "server"
 
     def _generate_config_content(self, server_list):
-        # Generate internal safe names to prevent TOML syntax errors with spaces/special chars
         safe_server_names = []
-        name_map = {} # Maps safe_name -> server_info
+        name_map = {} 
 
         for s in server_list:
             safe = self._clean_server_name(s['name'])
-            # Ensure unique safe names
             base_safe = safe
             counter = 1
             while safe in safe_server_names:
@@ -681,7 +669,6 @@ class DNSCryptClientGUI:
             f'require_nolog = {str(self.require_nolog_var.get()).lower()}',
             f'require_nofilter = {str(self.require_nofilter_var.get()).lower()}', 
             'ignore_system_dns = true',
-            # REMOVED: "fallback_resolver = '9.9.9.9:53'" as it is invalid format (must be a stamp)
             '',
             '# --- Cache ---', 
             'cache = true', 
@@ -695,7 +682,6 @@ class DNSCryptClientGUI:
         used_relays = set()
         anonymized_routes = []
         
-        # Write static entries using SAFE names
         for safe_name in safe_server_names:
             server_info = name_map[safe_name]
             config_lines.extend([f"\n[static.'{safe_name}']", f"stamp = '{server_info['stamp']}'"])
@@ -704,15 +690,12 @@ class DNSCryptClientGUI:
             if isinstance(relay_list, str): relay_list = [relay_list] if relay_list else []
             
             if relay_list and server_info['stamp'].startswith("sdns://AQ"):
-                # Clean relay names too for the route, but relay static definitions usually come from the relay list
-                # Relays in the route must match the static relay names we define below
                 safe_relays = []
                 for r_name in relay_list:
                     r_clean = self._clean_server_name(r_name)
                     safe_relays.append(r_clean)
-                    used_relays.add((r_name, r_clean)) # Keep track of original vs clean
+                    used_relays.add((r_name, r_clean)) 
                 
-                # Routes use safe names
                 anonymized_routes.append(f"{{ server_name = '{safe_name}', via = {json.dumps(safe_relays)} }}")
 
         if used_relays:
@@ -737,17 +720,10 @@ class DNSCryptClientGUI:
         update_ui('disable_button', True)
 
         try:
-            # Generate config using absolute path
             config_path = os.path.join(self.base_path, CONFIG_FILE)
             with open(config_path, "w", encoding='utf-8') as f: f.write(self._generate_config_content(server_list))
             
-            # --- FIX: Better process handling & Error Capture ---
             popen_args = self._get_hidden_subprocess_args()
-            # We MUST remove capturing flags if we want to read stdout/stderr specifically, 
-            # but _get_hidden_subprocess_args sets them up for hidden execution. 
-            # To debug, we pipe them.
-            
-            # Remove DEVNULL from stdin so we can pipe, keep creation flags
             if 'stdin' in popen_args: del popen_args['stdin']
             
             self.proxy_process = subprocess.Popen(
@@ -758,7 +734,6 @@ class DNSCryptClientGUI:
                 **popen_args
             )
             
-            # Wait a moment and check if it died immediately
             start_time = time.time()
             is_alive = True
             while time.time() - start_time < 2.5:
@@ -768,20 +743,18 @@ class DNSCryptClientGUI:
                 time.sleep(0.1)
 
             if not is_alive:
-                # Capture Error
                 _, err = self.proxy_process.communicate()
-                err_msg = err.decode('utf-8', errors='ignore') if err else "Unknown error"
+                # FIX: err is already str because text=True
+                err_msg = err if err else "Unknown error"
                 raise Exception(f"Process exited immediately.\nLog:\n{err_msg}")
                 
         except Exception as e:
             update_ui('status', "Error starting proxy.")
             self.root.after(0, lambda: messagebox.showerror("Proxy Start Error", str(e)))
             self.cleanup()
-            # Re-enable button
             self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
             return
 
-        # --- Set System DNS with Retry ---
         success = False
         for attempt in range(5):
              if self.set_system_dns("127.0.0.1"):
@@ -833,7 +806,6 @@ class DNSCryptClientGUI:
         run_args = self._get_hidden_subprocess_args()
         try:
             if platform.system() == "Windows":
-                # PowerShell command to set DNS on the Up adapter
                 cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' }} | Set-DnsClientServerAddress -ServerAddresses '{dns_server}' -Confirm:$false"]
                 subprocess.run(cmd, check=True, capture_output=True, **run_args)
             elif platform.system() == "Darwin":
@@ -857,7 +829,6 @@ class DNSCryptClientGUI:
                     if service.strip() and not service.strip().startswith('*'): subprocess.run(['networksetup', '-setdnsservers', service.strip(), 'empty'], capture_output=True, **run_args)
             elif platform.system() == "Linux":
                 if os.path.exists("/etc/resolv.conf"): os.remove("/etc/resolv.conf")
-                # Try to restore symlink if systemd-resolved is used
                 if os.path.exists('/run/systemd/resolve/stub-resolv.conf'):
                     os.symlink('/run/systemd/resolve/stub-resolv.conf', '/etc/resolv.conf')
         except: pass
@@ -873,16 +844,19 @@ class DNSCryptClientGUI:
             self.revert_system_dns()
 
     def start_fetch(self):
-        if not self.action_lock.acquire(blocking=False): return
-        self.fetch_button.config(state=tk.DISABLED)
-        self.bridge_button.config(state=tk.DISABLED)
-        
-        if not self.server_data:
-            self.activate_button.config(state=tk.DISABLED)
-            self.tree.delete(*self.tree.get_children())
+        threading.Thread(target=self._prepare_and_fetch, daemon=True).start()
+
+    def _prepare_and_fetch(self):
+        with self.action_lock:
+            self.root.after(0, lambda: self.fetch_button.config(state=tk.DISABLED))
+            self.root.after(0, lambda: self.bridge_button.config(state=tk.DISABLED))
             
-        self.status_var.set("Fetching server and relay lists...")
-        threading.Thread(target=self._fetch_and_parse_servers, daemon=True).start()
+            if not self.server_data:
+                self.root.after(0, lambda: self.activate_button.config(state=tk.DISABLED))
+                self.root.after(0, lambda: self.tree.delete(*self.tree.get_children()))
+                
+            self.root.after(0, lambda: self.status_var.set("Fetching server and relay lists..."))
+            self._fetch_and_parse_servers()
 
     def _parse_markdown_list(self, text):
         data = []
@@ -901,6 +875,7 @@ class DNSCryptClientGUI:
 
     def _fetch_and_parse_servers(self):
         try:
+            import requests
             headers = {'User-Agent': f'{APP_NAME}/1.0'}
             resp_res = requests.get(RESOLVERS_URL, timeout=15, headers=headers); resp_res.raise_for_status()
             self.server_data = self._parse_markdown_list(resp_res.text)
@@ -918,9 +893,7 @@ class DNSCryptClientGUI:
                     else: server[prop] = '✗'
                 server['properties'] = ', '.join(props); server['description'] = server['description'].replace('\n', ' ').strip()
             
-            # --- SAVE CACHE ON SUCCESS ---
             self.save_server_cache()
-            
             self.root.after(0, self.on_fetch_complete)
         except Exception as e: 
             def handle_error(err_msg):
@@ -933,29 +906,23 @@ class DNSCryptClientGUI:
                 else:
                     self.status_var.set(f"Fetch error: {err_msg}")
                     self.fetch_button.config(state=tk.NORMAL)
-                self.action_lock.release()
             self.root.after(0, lambda: handle_error(str(e)))
 
     def on_fetch_complete(self):
         self._populate_tree(self.server_data)
-        
         self.is_initialized = True
-        
         if not self.active_server_info:
             self.check_auto_activation()
 
         def final_ui_update():
             self.fetch_button.config(state=tk.NORMAL)
             if self.tree.selection(): self.bridge_button.config(state=tk.NORMAL)
-            self.action_lock.release()
         self.root.after(0, final_ui_update)
         
     def check_auto_activation(self):
         if not self.preferred_servers: return
-
         self.tree.selection_set([s['name'] for s in self.server_data if s["name"] in self.preferred_servers])
         servers_to_activate = [s for s in self.server_data if s["name"] in self.preferred_servers]
-        
         if servers_to_activate:
             self.status_var.set(f"Automatically reactivating {len(servers_to_activate)} servers...")
             threading.Thread(target=lambda: self._activation_worker_direct(servers_to_activate), daemon=True).start()
