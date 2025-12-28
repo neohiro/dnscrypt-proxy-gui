@@ -247,11 +247,15 @@ class DNSCryptClientGUI:
         columns = ("name", "type", "via", "no-log", "dnssec", "no-filter")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="extended")
         
+        # --- Configure Zebra Striping Tags ---
+        self.tree.tag_configure('oddrow', background='#f0f0f0')
+        self.tree.tag_configure('evenrow', background='white')
+        
         self.tree.heading("name", text="Server Name", command=lambda: self.on_header_click("name"))
         self.tree.column("name", width=220, stretch=tk.YES)
         self.tree.heading("type", text="Protocol", command=lambda: self.on_header_click("type"))
         self.tree.column("type", width=80, anchor=tk.CENTER)
-        self.tree.heading("via", text="Via Bridge(s)", command=lambda: self.on_header_click("via"))
+        self.tree.heading("via", text="via Relay(s)", command=lambda: self.on_header_click("via"))
         self.tree.column("via", width=150, stretch=tk.YES, anchor=tk.W)
         self.tree.heading("no-log", text="No Logs", command=lambda: self.on_header_click("no-log"))
         self.tree.column("no-log", width=60, anchor=tk.CENTER)
@@ -507,7 +511,13 @@ class DNSCryptClientGUI:
         for col in self.sort_stack:
             reverse = self.sort_dirs.get(col, False)
             data_rows.sort(key=lambda x: str(x[1][col]).lower(), reverse=reverse)
-        for index, (iid, _) in enumerate(data_rows): self.tree.move(iid, '', index)
+        
+        # Move items and re-apply alternating colors
+        for index, (iid, _) in enumerate(data_rows):
+            self.tree.move(iid, '', index)
+            tag = 'oddrow' if index % 2 != 0 else 'evenrow'
+            self.tree.item(iid, tags=(tag,))
+            
         for c in self.tree["columns"]:
             clean_text = self.tree.heading(c, "text").replace(" ▲", "").replace(" ▼", "")
             self.tree.heading(c, text=clean_text)
@@ -526,11 +536,15 @@ class DNSCryptClientGUI:
             elif filter_val == "DoH" and server.get('proto_type') == 'DoH': filtered_list.append(server)
         
         self.tree.delete(*self.tree.get_children())
-        for server in filtered_list:
+        for i, server in enumerate(filtered_list):
             relays = self.server_relay_map.get(server["name"], [])
             if isinstance(relays, str): relays = [relays] if relays else []
             values = (server["name"], server.get('proto_type', '?'), ", ".join(relays), server["no-log"], server["dnssec"], server["no-filter"])
-            self.tree.insert("", tk.END, values=values, iid=server["name"])
+            
+            # Apply alternating row colors
+            tag = 'oddrow' if i % 2 != 0 else 'evenrow'
+            self.tree.insert("", tk.END, values=values, iid=server["name"], tags=(tag,))
+            
         self.status_var.set(f"Showing {len(filtered_list)} servers ({len(self.server_data)} total) and {len(self.relay_data)} relays.")
         self.apply_current_sorts()
 
