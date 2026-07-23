@@ -1,4 +1,8 @@
 # dnscrypt-proxy-gui
+[![Python 3.x](https://img.shields.io/badge/python-3.x-blue.svg)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgray.svg)](https://github.com/)
+[![Build Status](https://github.com/neohiro/dnscrypt-proxy-gui/actions/workflows/release.yml/badge.svg)](https://github.com/neohiro/dnscrypt-proxy-gui/actions)
+
 A GUI to set up [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy) on Windows, MacOS or Linux.
 
 ## DNSCrypt Client GUI 🛡️

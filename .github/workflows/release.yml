@@ -1,0 +1,91 @@
+name: Auto-Build Executables
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach binaries to'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install System Dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pystray Pillow pyinstaller
+
+      - name: Build Windows Executable
+        if: matrix.os == 'windows-latest'
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
+          Compress-Archive -Path "dist\dnscrypt-proxy-gui\*" -DestinationPath "dnscrypt-proxy-gui-Windows.zip" -Force
+
+      - name: Build macOS Executable
+        if: matrix.os == 'macos-latest'
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
+          cd dist
+          zip -r ../dnscrypt-proxy-gui-macOS.zip dnscrypt-proxy-gui.app
+
+      - name: Build Linux Executable
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
+          cd dist
+          zip -r ../dnscrypt-proxy-gui-Linux.zip dnscrypt-proxy-gui
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: |
+            *.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            artifacts/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
