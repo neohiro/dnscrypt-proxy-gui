@@ -1,130 +1,119 @@
-# dnscrypt-proxy-gui
-[![Python 3.x](https://img.shields.io/badge/python-3.x-blue.svg)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgray.svg)](https://github.com/)
-[![Build Status](https://github.com/neohiro/dnscrypt-proxy-gui/actions/workflows/release.yml/badge.svg)](https://github.com/neohiro/dnscrypt-proxy-gui/actions)
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/cf5bbdab-b3cf-4a39-955b-ed59efe84505" alt="DNSCrypt Proxy GUI" width="400"/>
 
-A GUI to set up [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy) on Windows, MacOS or Linux.
+  <h1>DNSCrypt Proxy GUI 🛡️</h1>
 
-## DNSCrypt Client GUI 🛡️
-A powerful and cross-platform GUI wrapper for the official dnscrypt-proxy, allowing you to easily browse, configure, and secure your system's DNS traffic.
+  <p>A powerful, cross-platform GUI wrapper for the official dnscrypt-proxy.</p>
 
-### About The Project
-dnscrypt-proxy is a fantastic tool for securing DNS communications, but its power can be daunting for users who prefer a graphical interface. This project provides a user-friendly Python and Tkinter-based client that acts as a complete controller for the dnscrypt-proxy executable.
+  [![Python 3.x](https://img.shields.io/badge/python-3.x-blue.svg)](https://www.python.org/downloads/)
+  [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgray.svg)](https://github.com/neohiro/dnscrypt-proxy-gui/releases)
+  [![Build Status](https://github.com/neohiro/dnscrypt-proxy-gui/actions/workflows/release.yml/badge.svg)](https://github.com/neohiro/dnscrypt-proxy-gui/actions)
+  [![License](https://img.shields.io/badge/license-ISC-green.svg)](LICENSE)
+</div>
 
-It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background. You can also use this GUI to set up the .TOML file and use the dnscrypt-proxy service directly.
+<br />
 
-<img width="1100" height="882" alt="image" src="https://github.com/user-attachments/assets/cf5bbdab-b3cf-4a39-955b-ed59efe84505" />
+`dnscrypt-proxy` is a fantastic tool for securing DNS communications, but its power can be daunting for users who prefer a graphical interface. This project provides a user-friendly, cross-platform client that acts as a complete visual controller for the `dnscrypt-proxy` executable.
 
-### Features ✨
-- Browse & Sort Servers: Fetches the latest public DNSCrypt resolver list and displays it in an easy-to-sort table.
+It allows you to fetch the latest public resolver lists, select one or more servers, and instantly activate them. It handles everything from generating the configuration file to modifying your system's DNS settings and running the proxy in the background.
 
-- Multi-Server Activation: Select and activate multiple servers simultaneously for enhanced reliability and speed.
+## ✨ Features
 
-- Apply anonimizing relays to dnscrypt servers
+- **Browse & Sort Servers:** Fetches the latest public DNSCrypt resolver list and displays it in an easy-to-sort table.
+- **Multi-Server Activation:** Select and activate multiple servers simultaneously for enhanced reliability and speed.
+- **Anonymizing Relays:** Apply anonymizing relays to DNSCrypt servers for an extra layer of privacy.
+- **Live Status Indicator:** A clear visual indicator shows whether the service is ACTIVE or INACTIVE.
+- **System Tray Integration:** Hides the main window to a tray icon, allowing the client to run unobtrusively in the background.
+- **Run at Startup:** A simple checkbox lets you configure the client to launch automatically when you log in.
+- **Comprehensive Configuration:** A dedicated tab to visually manage the `dnscrypt-proxy.toml` settings.
+- **Server Requirements:** Enforce DNSSEC, no-log, and no-filter policies.
+- **Network Behavior:** Block IPv6 requests with a single click.
+- **Cache Settings:** Fine-tune the cache size and TTL values.
+- **Instant Apply:** Configuration changes are applied immediately to the running service with a seamless restart.
+- **Session Persistence:** Remembers your last active servers and settings, and can automatically reactivate them on the next launch.
+- **Automatic Privilege Elevation:** Intelligently requests administrator/sudo privileges on launch, as they are required for managing network settings.
 
-- Live Status Indicator: A clear visual indicator shows whether the service is ACTIVE or INACTIVE.
+---
 
-- System Tray Integration: Hides the main window to a tray icon, allowing the client to run unobtrusively in the background.
+## 🚀 Getting Started
 
-- Run at Startup: A simple checkbox lets you configure the client to launch automatically when you log in.
+You can either download the pre-compiled standalone executables (Recommended) or run the Python script directly.
 
-- Comprehensive Configuration: A dedicated tab to visually manage the dnscrypt-proxy.toml settings.
+### 📥 Option 1: Download Standalone Release (Recommended)
 
-- Server Requirements: Enforce DNSSEC, no-log, and no-filter policies.
+We provide high-quality, pre-built executables for Windows, macOS, and Linux. No Python installation required!
 
-- Network Behavior: Block IPv6 requests with a single click.
+1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the `.zip` file for your operating system.
+2. Extract the `.zip` archive to a folder of your choice.
+3. **Important:** Download the official `dnscrypt-proxy` executable for your OS from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
+4. Place the `dnscrypt-proxy` executable (e.g., `dnscrypt-proxy.exe` on Windows) **in the same folder** as the GUI executable.
+5. Run the GUI executable. (It will automatically request administrator/sudo privileges).
 
-- Cache Settings: Fine-tune the cache size and TTL values.
+---
 
-- Instant Apply: Configuration changes are applied immediately to the running service with a seamless restart.
+### 💻 Option 2: Run from Source
 
-- Session Persistence: Remembers your last active servers and settings, and can automatically reactivate them on the next launch.
+If you prefer to run the Python script directly, follow these steps:
 
-- Cross-Platform: Works on Windows, macOS, and Linux with platform-specific logic for DNS management and startup tasks.
+#### 1. Prerequisites
+- **Python 3.11+**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/downloads/).
+- **dnscrypt-proxy**: Download the latest version for your OS from the [official DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
 
-- Automatic Privilege Elevation: Intelligently requests administrator/sudo privileges on launch, as they are required for managing network settings.
-
-## How It Works ⚙️
-This application is a Python wrapper that automates the entire process of using dnscrypt-proxy:
-
-- Fetches: It downloads the official list of public DNSCrypt resolvers.
-
-- Configures: When you select servers and click "Activate," it dynamically generates a dnscrypt-proxy.toml configuration file with your chosen servers and settings from the Configuration tab.
-
-- Executes: It launches the dnscrypt-proxy.exe (or equivalent) process in the background, pointing it to the newly generated configuration file.
-
-- Redirects: It automatically changes your system's network adapter settings to use 127.0.0.1 as the DNS server, routing all DNS queries through the local proxy.
-
-- Restores: When you deactivate the service, it terminates the proxy process and gracefully reverts your system's DNS settings back to their original state (DHCP/Automatic).
-
-## Getting Started 🚀
-Follow these steps to get the client up and running on your system.
-
-### Prerequisites
->> You can use the .exe file on Windows directly. For Linux:
-
-Python 3.x: Ensure you have Python installed. You can download it from python.org.
-
-dnscrypt-proxy Executable: This client controls the official proxy; it does not include it.
-
-Download the latest version for your OS from the official DNSCrypt releases page.
-
-Unzip the archive and place the dnscrypt-proxy executable file in the same directory as the Python script.
-
-Python Libraries: Install the required packages using pip.
-
-
-
-pip install requests pystray Pillow
-Installation & Usage
-Get the Code: Clone this repository or download the DNSCRYPTCLIENT.py script.
-
-Shell
-
+#### 2. Get the Code
+Clone this repository or download the source code:
+```bash
 git clone https://github.com/neohiro/dnscrypt-proxy-gui.git
-
 cd dnscrypt-proxy-gui
+```
 
-Place the Executable: Make sure your directory looks like this:
+#### 3. Install Dependencies
+Install the required Python libraries using `pip`:
+```bash
+pip install requests pystray Pillow
+```
 
-├── DNSCRYPTCLIENT.py       # The script you downloaded
+#### 4. Prepare the Directory
+Extract the `dnscrypt-proxy` archive you downloaded earlier and place the executable inside the cloned repository. Your directory should look like this:
+```text
+dnscrypt-proxy-gui/
+├── dnscrypt-proxy-gui.PY    # The GUI script
+└── dnscrypt-proxy.exe       # The official executable (or `dnscrypt-proxy` on Linux/macOS)
+```
 
-└── dnscrypt-proxy.exe      # The official executable (or `dnscrypt-proxy` on Linux/macOS)
+#### 5. Run the Script
+Execute the script from your terminal. It will prompt for necessary network administrator privileges:
+```bash
+python dnscrypt-proxy-gui.PY
+```
 
-Run the Script: Execute the script from your terminal. It will request administrator privileges.
+---
 
-Shell
+## 🛠️ How to Use
 
-python DNSCRYPTCLIENT.py
-Activate a Server:
+1. **Refresh List:** Click **"Refresh Server List"** to fetch the latest resolvers.
+2. **Select Servers:** Select one or more servers from the list.
+3. **Configure (Optional):** Go to the Configuration tab to adjust settings like DNSSEC, Logging, and IPv6.
+4. **Activate:** Click **"Activate Selected Server(s)"**.
+5. **Success:** Your DNS traffic is now encrypted! You can close the window to minimize it to the system tray.
 
-Click "Refresh Server List" to fetch the latest resolvers.
+> **Note:** When you click Activate, the GUI dynamically generates a `dnscrypt-proxy.toml` file, launches the proxy in the background, and automatically configures your system's network adapter to route DNS queries through `127.0.0.1`. When you deactivate, it gracefully reverts your settings back to their original state.
 
-Select one or more servers from the list.
+---
 
-(Optional) Go to the Configuration tab to adjust settings.
+## 🤝 Contributing
 
-Click "Activate Selected Server(s)".
+Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
 
-Your DNS traffic is now encrypted! You can close the window to minimize it to the system tray.
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-## Contributing 🤝
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are greatly appreciated.
+## 📄 License
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
+Distributed under the ISC License, in parallel with dnscrypt-proxy itself. See [LICENSE](LICENSE) for more information.
 
-- Fork the Project
+## 🙏 Acknowledgments
 
-- Create your Feature Branch (git checkout -b feature/AmazingFeature)
-
-- Commit your Changes (git commit -m 'Add some AmazingFeature')
-
-- Push to the Branch (git push origin feature/AmazingFeature)
-
-- Open a Pull Request
-
-## License
-Distributed under the ISC License, in parallel with dnscrypt-proxy itself. See LICENSE for more information.
-
-## Acknowledgments
-A huge thank you to the DNSCrypt team for creating and maintaining the incredible dnscrypt-proxy project.
+A huge thank you to the [DNSCrypt team](https://github.com/DNSCrypt) for creating and maintaining the incredible `dnscrypt-proxy` project.
