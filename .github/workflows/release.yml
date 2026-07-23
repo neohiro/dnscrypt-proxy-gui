@@ -45,19 +45,19 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
-          Compress-Archive -Path "dist\dnscrypt-proxy-gui\*" -DestinationPath "dnscrypt-proxy-gui-Windows.zip" -Force
+          Compress-Archive -Path "dist\dnscrypt-proxy-gui" -DestinationPath "dnscrypt-proxy-gui-Windows.zip" -Force
 
       - name: Build macOS Executable
         if: matrix.os == 'macos-latest'
         run: |
-          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.icns dnscrypt-proxy-gui.PY
           cd dist
           zip -r ../dnscrypt-proxy-gui-macOS.zip dnscrypt-proxy-gui.app
 
       - name: Build Linux Executable
         if: matrix.os == 'ubuntu-latest'
         run: |
-          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.png dnscrypt-proxy-gui.PY
           cd dist
           zip -r ../dnscrypt-proxy-gui-Linux.zip dnscrypt-proxy-gui
 
