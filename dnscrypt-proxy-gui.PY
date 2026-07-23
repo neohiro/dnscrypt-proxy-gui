@@ -707,7 +707,8 @@ class DNSCryptClientGUI:
 
         if anonymized_routes:
             config_lines.append('\n[anonymized_dns]')
-            config_lines.append(f"routes = [\n    {',\n    '.join(anonymized_routes)}\n]")
+            routes_str = ',\n    '.join(anonymized_routes)
+            config_lines.append(f"routes = [\n    {routes_str}\n]")
             
         return "\n".join(config_lines)
 
