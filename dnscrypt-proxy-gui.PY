@@ -91,7 +91,11 @@ class DNSCryptClientGUI:
         
         # --- CRITICAL FLAGS ---
         self.is_exiting = False 
-        self.is_initialized = False 
+        # All persisted-state variables are initialised synchronously below,
+        # so saving is safe from the start. (Previously this flag was only
+        # flipped after a successful list fetch, which meant an offline user
+        # could never save any setting.)
+        self.is_initialized = True 
 
         self.block_ipv6_var = tk.BooleanVar()
         self.require_dnssec_var = tk.BooleanVar()
