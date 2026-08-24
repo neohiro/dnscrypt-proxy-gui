@@ -1,8 +1,6 @@
 """Tests for dnscrypt-proxy.toml generation and sanitisation logic."""
 import tomllib
 
-import pytest
-
 
 class TestCleanServerName:
     def test_strips_invalid_characters(self, gui):
@@ -19,6 +17,7 @@ class TestConfigGeneration:
     def test_generated_config_is_valid_toml(self, gui, sample_servers):
         content = gui._generate_config_content(sample_servers)
         parsed = tomllib.loads(content)
+        assert isinstance(parsed.get("static"), dict) and parsed["static"]
 
     def test_listen_address(self, gui, sample_servers):
         parsed = tomllib.loads(gui._generate_config_content(sample_servers))

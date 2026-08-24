@@ -44,7 +44,7 @@ You can either download the pre-compiled standalone executables (Recommended) or
 
 We provide high-quality, pre-built executables for Windows, macOS, and Linux. No Python installation required!
 
-1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the archive matching your OS and version - e.g. `dnscrypt-proxy-gui-1.0.3-Windows-x64.zip`.
+1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the archive matching your OS and version - e.g. `dnscrypt-proxy-gui-1.0.4-Windows-x64.zip`.
 2. Extract it into **its own dedicated folder** (e.g. `C:\Program Files\dnscrypt-proxy-gui\`, `~/Applications/dnscrypt-proxy-gui/`, or `~/dnscrypt-proxy-gui/`). Never extract the contents loose into `Program Files` itself - the folder contains the app plus its runtime libraries.
 3. **macOS users:** the app is not codesigned, so on first launch right-click the app and choose **Open** (or allow it in *System Settings → Privacy & Security*). Also grab the official `dnscrypt-proxy` binary from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases) and keep it beside the app (or set its path in Configuration → System Paths).
 4. **Important:** Download the official `dnscrypt-proxy` executable for your OS from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).

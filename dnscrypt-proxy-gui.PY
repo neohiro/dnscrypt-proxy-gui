@@ -23,7 +23,7 @@ from logging.handlers import RotatingFileHandler
 # --- New Imports for Tray Icon and Startup ---
 try:
     from pystray import MenuItem as item, Icon as icon
-    from PIL import Image, ImageTk
+    from PIL import Image
     TRAY_AVAILABLE = True
 except ImportError:
     TRAY_AVAILABLE = False
@@ -33,7 +33,7 @@ if platform.system() == "Windows":
 
 # --- Constants ---
 APP_NAME = "DNSCryptClientGUI"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # dnscrypt-proxy cache tunables. Note: cache_size counts ENTRIES, not bytes.
 CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX = 512, 64, 1 << 20
