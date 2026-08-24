@@ -16,6 +16,9 @@ import time
 import json
 import re
 import base64
+import logging
+import tempfile
+from logging.handlers import RotatingFileHandler
 
 # --- New Imports for Tray Icon and Startup ---
 try:
@@ -30,6 +33,7 @@ if platform.system() == "Windows":
 
 # --- Constants ---
 APP_NAME = "DNSCryptClientGUI"
+APP_VERSION = "1.0.3"
 RESOLVERS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
 RELAYS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md"
 CONFIG_FILE = "dnscrypt-proxy.toml"
@@ -54,7 +58,50 @@ def is_admin():
         else:
             return os.geteuid() == 0
     except Exception:
+        LOG.debug("Admin check failed", exc_info=True)
         return False
+
+# --- Logging ---
+# A rotating file log is essential for a GUI that suppresses stdout when
+# frozen: without it, activation failures and DNS errors are invisible.
+def _log_directory():
+    system = platform.system()
+    if system == "Windows":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(root, APP_NAME, "logs")
+    if system == "Darwin":
+        return os.path.expanduser("~/Library/Logs/" + APP_NAME)
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache, APP_NAME.lower(), "logs")
+
+
+def setup_logging():
+    logger = logging.getLogger(APP_NAME)
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
+    for target in (_log_directory(), os.path.join(tempfile.gettempdir(), APP_NAME)):
+        try:
+            os.makedirs(target, exist_ok=True)
+            handler = RotatingFileHandler(
+                os.path.join(target, "dnscrypt-proxy-gui.log"),
+                maxBytes=512 * 1024,
+                backupCount=2,
+                encoding="utf-8",
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            break
+        except OSError:
+            continue
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logger.addHandler(console)  # swallowed harmlessly in frozen builds
+    return logger
+
+
+LOG = setup_logging()
 
 class DNSCryptClientGUI:
     def __init__(self, root):
@@ -426,7 +473,8 @@ class DNSCryptClientGUI:
                     if TRAY_AVAILABLE:
                         self.app_icon_image = Image.open(self.icon_path)
                     break
-                except Exception: pass
+                except Exception:
+                    LOG.debug("Could not load app icon from %s", p, exc_info=True)
 
     def check_proxy_executable(self):
         candidate = self.proxy_path_var.get().strip()
@@ -667,7 +715,7 @@ class DNSCryptClientGUI:
             with open(self.cache_file, 'w') as f:
                 json.dump(cache_data, f)
         except Exception as e:
-            print(f"Failed to save cache: {e}")
+            LOG.error("Failed to save server cache: %s", e)
 
     def load_server_cache(self):
         try:
@@ -710,10 +758,11 @@ class DNSCryptClientGUI:
                 image = self.app_icon_image if self.app_icon_image else Image.new('RGB', (64, 64), 'green')
                 menu = (item('Show', self.show_window, default=True), item('Exit', self.quit_app))
                 with self.tray_lock: self.tray_icon = icon(APP_NAME, image, "DNSCrypt Client", menu)
-                self.tray_icon.run() 
+                self.tray_icon.run()
                 with self.tray_lock: self.tray_icon = None
             except Exception as e:
                 print(f"Tray error: {e}")
+                LOG.error("Tray icon crashed", exc_info=True)
                 self.quit_app()
 
         with self.tray_lock:
@@ -804,7 +853,9 @@ class DNSCryptClientGUI:
                 is_startup = os.path.exists(os.path.expanduser(f"~/.config/autostart/{APP_NAME}.desktop"))
             elif system == "Darwin":
                 is_startup = os.path.exists(os.path.expanduser(f"~/Library/LaunchAgents/com.{APP_NAME}.plist"))
-        except: is_startup = False
+        except Exception:
+            LOG.debug("Startup registration check failed", exc_info=True)
+            is_startup = False
         self.startup_var.set(is_startup)
     
     def on_filter_changed(self, event=None):
@@ -989,11 +1040,11 @@ class DNSCryptClientGUI:
             name_map[safe] = s
 
         try: cache_size = int(self.cache_size_var.get())
-        except: cache_size = 512
+        except (TypeError, ValueError): cache_size = 512
         try: cache_min_ttl = int(self.cache_min_ttl_var.get())
-        except: cache_min_ttl = 60
+        except (TypeError, ValueError): cache_min_ttl = 60
         try: cache_neg_ttl = int(self.cache_neg_ttl_var.get())
-        except: cache_neg_ttl = 60
+        except (TypeError, ValueError): cache_neg_ttl = 60
 
         config_lines = [
             '# Auto-generated by DNSCrypt Client GUI', 
@@ -1333,35 +1384,38 @@ class DNSCryptClientGUI:
         self.root.after(0, final_ui_reset)
 
     def set_system_dns(self, dns_server):
-        run_args = self._get_hidden_subprocess_args()
         try:
             if platform.system() == "Windows":
                 cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", f"Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' }} | Set-DnsClientServerAddress -ServerAddresses '{dns_server}' -Confirm:$false"]
-                subprocess.run(cmd, check=True, capture_output=True, **run_args)
+                self._run_hidden(cmd)
             elif platform.system() == "Darwin":
-                result = subprocess.run(['networksetup', '-listallnetworkservices'], check=True, capture_output=True, **run_args)
-                for service in result.stdout.splitlines():
-                     if service.strip() and not service.strip().startswith('*'): subprocess.run(['networksetup', '-setdnsservers', service.strip(), dns_server], capture_output=True, **run_args)
+                for service in self._list_mac_services():
+                    subprocess.run(['networksetup', '-setdnsservers', service, dns_server], check=False, capture_output=True, **self._get_hidden_subprocess_args())
             elif platform.system() == "Linux":
                 with open("/etc/resolv.conf", "w") as f: f.write(f"nameserver {dns_server}\n")
             return True
-        except: return False
+        except Exception as e:
+            LOG.error("Failed to set system DNS to %s: %s", dns_server, e)
+            return False
 
     def revert_system_dns(self):
-        run_args = self._get_hidden_subprocess_args()
+        """Last-resort reset of system DNS to automatic/DHCP defaults.
+
+        Only used when no exact backup exists; the normal path is
+        restore_dns_backup()."""
         try:
             if platform.system() == "Windows":
                  cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Reset-DnsClientServerAddress -Confirm:$false"]
-                 subprocess.run(cmd, check=True, capture_output=True, **run_args)
+                 self._run_hidden(cmd)
             elif platform.system() == "Darwin":
-                result = subprocess.run(['networksetup', '-listallnetworkservices'], check=True, capture_output=True, **run_args)
-                for service in result.stdout.splitlines():
-                    if service.strip() and not service.strip().startswith('*'): subprocess.run(['networksetup', '-setdnsservers', service.strip(), 'empty'], capture_output=True, **run_args)
+                for service in self._list_mac_services():
+                    subprocess.run(['networksetup', '-setdnsservers', service, 'empty'], check=False, capture_output=True, **self._get_hidden_subprocess_args())
             elif platform.system() == "Linux":
                 if os.path.exists("/etc/resolv.conf"): os.remove("/etc/resolv.conf")
                 if os.path.exists('/run/systemd/resolve/stub-resolv.conf'):
                     os.symlink('/run/systemd/resolve/stub-resolv.conf', '/etc/resolv.conf')
-        except: pass
+        except Exception:
+            LOG.warning("revert_system_dns could not complete", exc_info=True)
 
     def cleanup(self):
         self.is_exiting = True
@@ -1403,7 +1457,7 @@ class DNSCryptClientGUI:
     def _fetch_and_parse_servers(self):
         try:
             import requests
-            headers = {'User-Agent': f'{APP_NAME}/1.0'}
+            headers = {'User-Agent': f'{APP_NAME}/{APP_VERSION}'}
             resp_res = requests.get(RESOLVERS_URL, timeout=15, headers=headers); resp_res.raise_for_status()
             self.server_data = self._parse_markdown_list(resp_res.text)
             resp_rel = requests.get(RELAYS_URL, timeout=15, headers=headers); resp_rel.raise_for_status()
@@ -1484,6 +1538,19 @@ class DNSCryptClientGUI:
                 self.details_text.configure(state='normal'); self.details_text.delete(1.0, tk.END)
                 self.details_text.insert(tk.END, details); self.details_text.configure(state='disabled')
 
+def _warn_elevation_required():
+    """Show a visible explanation when elevation cannot be obtained."""
+    try:
+        warn_root = tk.Tk()
+        warn_root.withdraw()
+        messagebox.showerror(
+            "Administrator Privileges Required",
+            "This application needs administrator/sudo privileges to manage "
+            "your system's DNS settings.\n\nIt will now exit.")
+        warn_root.destroy()
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     if getattr(sys, 'frozen', False):
         application_path = os.path.dirname(sys.executable)
@@ -1496,9 +1563,15 @@ if __name__ == "__main__":
             if platform.system() == "Windows":
                 import ctypes
                 params = " ".join([f'"{arg}"' for arg in sys.argv])
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-            else: os.execvp('sudo', ['sudo', sys.executable] + sys.argv)
-        except: pass
+                rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+                if rc <= 32:
+                    # Elevation was declined or failed (e.g. UAC cancelled).
+                    LOG.warning("Elevation declined/failed (ShellExecuteW rc=%s)", rc)
+                    _warn_elevation_required()
+            else:
+                os.execvp('sudo', ['sudo', sys.executable] + sys.argv)
+        except Exception:
+            LOG.error("Elevation request failed", exc_info=True)
         sys.exit(0)
     
     app_root = tk.Tk()
