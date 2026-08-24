@@ -1351,18 +1351,23 @@ class DNSCryptClientGUI:
             
             self.save_server_cache()
             self.root.after(0, self.on_fetch_complete)
-        except Exception as e: 
+        except Exception as e:
+            err_text = str(e)
+
             def handle_error(err_msg):
                 if self.server_data:
                     self.status_var.set(f"Fetch failed (using cached list): {err_msg}")
                     self.fetch_button.config(state=tk.NORMAL)
-                    if self.tree.selection(): 
+                    if self.tree.selection():
                         self.activate_button.config(state=tk.NORMAL)
                         self.bridge_button.config(state=tk.NORMAL)
                 else:
                     self.status_var.set(f"Fetch error: {err_msg}")
                     self.fetch_button.config(state=tk.NORMAL)
-            self.root.after(0, lambda: handle_error(str(e)))
+            # err_text is bound eagerly: exception variables are deleted when
+            # the except block exits, so a plain lambda over `e` would raise
+            # NameError inside the Tk callback.
+            self.root.after(0, lambda m=err_text: handle_error(m))
 
     def on_fetch_complete(self):
         self._populate_tree(self.server_data)
