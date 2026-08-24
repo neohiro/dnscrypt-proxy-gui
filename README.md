@@ -23,6 +23,7 @@ It allows you to fetch the latest public resolver lists, select one or more serv
 - **Multi-Server Activation:** Select and activate multiple servers simultaneously for enhanced reliability and speed.
 - **Anonymizing Relays:** Apply anonymizing relays to DNSCrypt servers for an extra layer of privacy.
 - **Live Status Indicator:** A clear visual indicator shows whether the service is ACTIVE or INACTIVE.
+- **Exact DNS Backup & Restore:** Before any change, your current DNS settings are captured and restored verbatim on deactivation or exit - a **Restore DNS** button is always available as a safety hatch.
 - **System Tray Integration:** Hides the main window to a tray icon, allowing the client to run unobtrusively in the background.
 - **Run at Startup:** A simple checkbox lets you configure the client to launch automatically when you log in.
 - **Comprehensive Configuration:** A dedicated tab to visually manage the `dnscrypt-proxy.toml` settings.
@@ -136,7 +137,9 @@ set them once and they persist in `settings.json`.
 4. **Activate:** Click **"Activate Selected Server(s)"**.
 5. **Success:** Your DNS traffic is now encrypted! You can close the window to minimize it to the system tray.
 
-> **Note:** When you click Activate, the GUI dynamically generates a `dnscrypt-proxy.toml` file, launches the proxy in the background, and automatically configures your system's network adapter to route DNS queries through `127.0.0.1`. When you deactivate, it gracefully reverts your settings back to their original state.
+> **Note:** When you click Activate, the GUI dynamically generates a `dnscrypt-proxy.toml` file, launches the proxy in the background, and automatically configures your system's network adapter to route DNS queries through `127.0.0.1`. Your previous DNS settings are snapshotted first (`dns_backup.json`) and restored exactly when you deactivate or exit. When you deactivate, it gracefully reverts your settings back to their original state.
+
+> **Troubleshooting:** The app writes a rotating log to `%LOCALAPPDATA%\DNSCryptClientGUI\logs` (Windows), `~/Library/Logs/DNSCryptClientGUI` (macOS) or `~/.cache/dnscryptclientgui/logs` (Linux). Include recent lines when reporting problems.
 
 ---
 
