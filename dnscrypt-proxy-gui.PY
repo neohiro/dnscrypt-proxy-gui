@@ -5,6 +5,7 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 # import requests # Moved to local scope for faster startup
 import threading
 import collections
+import queue
 import os
 import sys
 import subprocess
@@ -167,6 +168,12 @@ class DNSCryptClientGUI:
         self.load_app_icon()
         self.setup_widgets()
         self.setup_tray_and_close_protocol()
+
+        # Thread-safe bridge for tray callbacks: pystray invokes menu handlers
+        # on its own thread, but Tkinter widgets may only be touched from the
+        # main thread. Handlers enqueue closures that the main loop drains.
+        self._ui_queue = queue.Queue()
+        self.root.after(100, self._drain_ui_queue)
         
         self.check_proxy_executable()
         self.check_startup_status()
@@ -676,6 +683,21 @@ class DNSCryptClientGUI:
     def setup_tray_and_close_protocol(self):
         self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
 
+    def _post_ui(self, fn):
+        self._ui_queue.put(fn)
+
+    def _drain_ui_queue(self):
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        self.root.after(100, self._drain_ui_queue)
+
     def hide_window(self):
         if not TRAY_AVAILABLE:
             # No system-tray backend available - minimising keeps the app
@@ -702,12 +724,20 @@ class DNSCryptClientGUI:
     def show_window(self):
         with self.tray_lock:
             if self.tray_icon: self.tray_icon.stop()
-        self.root.deiconify(); self.root.lift(); self.root.attributes('-topmost', 1); self.root.attributes('-topmost', 0)
+
+        def _show():
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes('-topmost', 1)
+            self.root.attributes('-topmost', 0)
+
+        # Called by pystray on its own thread - marshal into the Tk loop.
+        self._post_ui(_show)
 
     def quit_app(self):
         with self.tray_lock:
             if self.tray_icon: self.tray_icon.stop()
-        self.root.destroy()
+        self._post_ui(self.root.destroy)
 
     def get_startup_path_and_command(self):
         script_path = os.path.abspath(sys.argv[0])
