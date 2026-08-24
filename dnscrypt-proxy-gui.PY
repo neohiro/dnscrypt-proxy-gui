@@ -913,7 +913,7 @@ class DNSCryptClientGUI:
                     "Exit DNSCrypt Client?",
                     "The system tray icon is unavailable.\n"
                     "Closing this window will EXIT the application\n"
-                    "(and deactivate the proxy). Continue?"):
+                    "(and deactivate the proxy). Continue?", parent=self.root):
                 self.quit_app()
             else:
                 self.root.iconify()
@@ -1652,6 +1652,11 @@ class DNSCryptClientGUI:
         self.root.after(0, lambda: self.status_var.set("Deactivating..."))
         self.root.after(0, lambda: self.activate_button.config(state=tk.DISABLED))
 
+        # Authoritative state flips synchronously: callers on worker threads
+        # (e.g. the config-restart flow) check this flag immediately after
+        # this method returns, long before the queued UI reset runs.
+        self.active_server_info = []
+
         if self.proxy_process:
             self.proxy_process.terminate()
             try:
@@ -1663,15 +1668,14 @@ class DNSCryptClientGUI:
         # Exact restoration of the user's previous DNS configuration; the
         # reset-to-DHCP path is only a last resort when no backup exists.
         self._revert_after_restore_attempt()
-        
+
         def final_ui_reset():
-            self.active_server_info = []
             self.activate_button.config(text="Activate Selected Server(s)", state=tk.NORMAL if self.tree.selection() else tk.DISABLED)
             self.status_indicator.config(text="STATUS: INACTIVE", style="Inactive.TLabel")
             self.active_server_label.config(text="No server active.")
             self.status_var.set("Deactivated. System DNS restored.")
             self.save_settings()
-        
+
         self.root.after(0, final_ui_reset)
 
     def set_system_dns(self, dns_server):
