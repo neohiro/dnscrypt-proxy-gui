@@ -8,7 +8,7 @@ on:
       tag:
         description: 'Release tag to attach binaries to'
         required: true
-        default: 'v1.0.4'
+        default: 'v1.0.5'
 
 permissions:
   contents: write
