@@ -13,35 +13,47 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux builds on 22.04 on purpose: the bundled glibc (2.35) keeps the
+        # executable compatible with older distributions.
+        os: [ubuntu-22.04, macos-latest, windows-latest]
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Resolve version from tag
         id: ver
         shell: bash
+        env:
+          RAW_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="${RAW_TAG}"
           VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' is not strict semver (expected vX.Y.Z)"
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "building $TAG (product version $VERSION)"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install System Dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-tk
@@ -49,15 +61,16 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pystray Pillow pyinstaller
+          pip install -r requirements.txt "pyinstaller==6.22.2"
 
       - name: Build Windows Executable
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           # Version metadata so Explorer shows a proper ProductVersion (#4)
-          $maj, $min, $patch = $env:APP_VERSION.Split('.')
+          $maj, $min, $patch = ($env:APP_VERSION.Split('.') + @('0', '0', '0'))[0..2]
           @(
             'VSVersionInfo(',
             '  ffi=FixedFileInfo(',
@@ -74,6 +87,7 @@ jobs:
 
       - name: Build macOS Executable
         if: matrix.os == 'macos-latest'
+        shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
@@ -82,7 +96,8 @@ jobs:
           zip -r "../dnscrypt-proxy-gui-$APP_VERSION-macOS.zip" dnscrypt-proxy-gui.app
 
       - name: Build Linux Executable
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
@@ -91,7 +106,7 @@ jobs:
           zip -r "../dnscrypt-proxy-gui-$APP_VERSION-Linux.zip" dnscrypt-proxy-gui
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-${{ matrix.os }}
           path: |
@@ -105,17 +120,25 @@ jobs:
       contents: write
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Attach to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             artifacts/*.zip
+            artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
