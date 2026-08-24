@@ -300,10 +300,27 @@ class DNSCryptClientGUI:
         self.check_proxy_executable()
         self.check_startup_status()
 
+        # --- Window geometry persistence ---
+        self._geometry_save_job = None
+        saved_geometry = self.settings.get("ui_geometry", "")
+        if isinstance(saved_geometry, str) and "x" in saved_geometry:
+            try:
+                self.root.geometry(saved_geometry)
+            except Exception:
+                LOG.debug("Could not restore geometry %r", saved_geometry)
+        self.root.bind("<Configure>", self._on_window_configure)
+
         # --- CACHE LOGIC ---
         self.load_server_cache()
         if self.server_data:
-            self.status_var.set(f"Loaded {len(self.server_data)} servers from local cache.")
+            age_message = ""
+            if self.server_cache_ts:
+                age_minutes = max(0, int((time.time() - self.server_cache_ts) / 60))
+                if age_minutes >= 60:
+                    age_message = f" (list is {age_minutes // 60}h old)"
+                elif age_minutes:
+                    age_message = f" (list is {age_minutes} min old)"
+            self.status_var.set(f"Loaded {len(self.server_data)} servers from local cache.{age_message}")
             self._populate_tree()
             self.check_auto_activation()
         
@@ -626,9 +643,27 @@ class DNSCryptClientGUI:
         
         columns = ("name", "type", "via", "no-log", "dnssec", "no-filter")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="extended")
-        
-        self.tree.tag_configure('oddrow', background='#f0f0f0')
-        self.tree.tag_configure('evenrow', background='white')
+
+        # Zebra rows derived from the active theme so they stay readable on
+        # dark system themes instead of hard-coding light colors.
+        theme_bg = self.style.lookup('Treeview', 'background') or '#ffffff'
+
+        def _luminance(color):
+            color = str(color).lstrip('#')
+            if len(color) == 3:
+                color = ''.join(c * 2 for c in color)
+            try:
+                r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+            except ValueError:
+                return 1.0
+            return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+        if _luminance(theme_bg) >= 0.5:
+            odd_bg, even_bg = '#f0f0f0', 'white'
+        else:
+            odd_bg, even_bg = '#2a2d32', '#1e2126'
+        self.tree.tag_configure('oddrow', background=odd_bg)
+        self.tree.tag_configure('evenrow', background=even_bg)
         
         self.tree.heading("name", text="Server Name", command=lambda: self.on_header_click("name"))
         self.tree.column("name", width=220, stretch=tk.YES)
@@ -755,6 +790,9 @@ class DNSCryptClientGUI:
             "server_relay_map": self.server_relay_map,
             "ui_filter_protocol": self.protocol_filter_var.get(),
             "ui_start_minimized": self.start_minimized_var.get(),
+            "ui_geometry": (self.root.geometry()
+                            if self.root.state() == "normal"
+                            else self.settings.get("ui_geometry", "")),
             "ui_sort_stack": self.sort_stack,
             "ui_sort_dirs": self.sort_dirs,
             "block_ipv6": self.block_ipv6_var.get(),
@@ -797,18 +835,51 @@ class DNSCryptClientGUI:
             LOG.error("Failed to save server cache: %s", e)
 
     def load_server_cache(self):
+        self.server_cache_ts = None
         try:
             if not os.path.exists(self.cache_file): return False
             with open(self.cache_file, 'r') as f:
                 data = json.load(f)
                 self.server_data = data.get("servers", [])
                 self.relay_data = data.get("relays", [])
+                self.server_cache_ts = data.get("timestamp")
                 return True
         except Exception:
+            LOG.debug("Could not load server cache", exc_info=True)
             return False
 
     def setup_tray_and_close_protocol(self):
-        self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
+        self.root.protocol('WM_DELETE_WINDOW', self.on_close_window)
+
+    def on_close_window(self):
+        if not TRAY_AVAILABLE:
+            # No tray icon exists, so closing must not silently strand the
+            # app as an unminimizable ghost - ask the user explicitly.
+            if messagebox.askyesno(
+                    "Exit DNSCrypt Client?",
+                    "The system tray icon is unavailable.\n"
+                    "Closing this window will EXIT the application\n"
+                    "(and deactivate the proxy). Continue?"):
+                self.quit_app()
+            else:
+                self.root.iconify()
+            return
+        self.hide_window()
+
+    def _on_window_configure(self, event):
+        if event.widget is not self.root:
+            return
+        if self._geometry_save_job:
+            self.root.after_cancel(self._geometry_save_job)
+        self._geometry_save_job = self.root.after(800, self._persist_geometry)
+
+    def _persist_geometry(self):
+        self._geometry_save_job = None
+        try:
+            if not self.is_exiting and self.root.state() == "normal":
+                self.save_settings()
+        except Exception:
+            LOG.debug("Could not persist window geometry", exc_info=True)
 
     def _post_ui(self, fn):
         self._ui_queue.put(fn)
@@ -1645,6 +1716,18 @@ def _warn_elevation_required():
         pass
 
 if __name__ == "__main__":
+    if platform.system() == "Windows":
+        # Per-monitor-ish DPI awareness: crisp text on high-DPI displays.
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                import ctypes
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     if getattr(sys, 'frozen', False):
         application_path = os.path.dirname(sys.executable)
     else:
