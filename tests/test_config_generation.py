@@ -105,6 +105,65 @@ class TestConfigGeneration:
                 )
 
 
+class TestCoerceInt:
+    """Covers the shared clamping helper used by UI fields and config gen."""
+
+    def test_valid_passthrough(self, gui):
+        assert gui._coerce_int("512", 512, 64, 1 << 20) == 512
+
+    def test_whitespace_tolerated(self, gui):
+        assert gui._coerce_int(" 1024 ", 512, 64, 1 << 20) == 1024
+
+    def test_garbage_falls_back_to_default(self, gui):
+        assert gui._coerce_int("abc", 512, 64, 1 << 20) == 512
+        assert gui._coerce_int(None, 512, 64, 1 << 20) == 512
+
+    def test_clamped_to_bounds(self, gui):
+        assert gui._coerce_int("-50", 512, 64, 1000) == 64
+        assert gui._coerce_int("99999", 512, 64, 1000) == 1000
+
+    def test_ttl_defaults(self, gui, sample_servers):
+        gui.cache_min_ttl_var.set("not-a-number")
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        assert parsed["cache_min_ttl"] == 60
+
+
+class TestMacServiceFiltering:
+    def test_legend_and_disabled_services_are_skipped(self, gui, monkeypatch):
+        class FakeResult:
+            stdout = (
+                "An asterisk (*) denotes that a network service is disabled.\n"
+                "Wi-Fi\n"
+                "*Bluetooth PAN\n"
+                "Thunderbolt Bridge\n"
+                "\n"
+            )
+
+        monkeypatch.setattr(gui, "_run_hidden", lambda cmd, check=True: FakeResult())
+        assert gui._list_mac_services() == ["Wi-Fi", "Thunderbolt Bridge"]
+
+    def test_snapshot_marks_missing_servers_as_none(self, gui, monkeypatch):
+        class FakeResult:
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        services = {"Wi-Fi"}
+        monkeypatch.setattr(
+            gui, "_list_mac_services", lambda: list(services)
+        )
+        outputs = iter([
+            FakeResult("There aren't any DNS Servers set on Wi-Fi."),
+        ])
+
+        def fake_run(cmd, check=False, capture_output=True, **kwargs):
+            return next(outputs)
+
+        import subprocess as _subprocess
+        monkeypatch.setattr(_subprocess, "run", fake_run)
+        snapshot = gui._snapshot_dns_macos()
+        assert snapshot == {"Wi-Fi": None}
+
+
 class TestStaleRelayRegression:
     def test_unknown_relay_is_dropped_not_emitted(self, gui, sample_servers):
         """If a mapped relay vanished from the upstream list the generated
