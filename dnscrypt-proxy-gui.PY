@@ -14,6 +14,7 @@ import atexit
 import time
 import json
 import re
+import base64
 
 # --- New Imports for Tray Icon and Startup ---
 try:
@@ -33,6 +34,7 @@ RELAYS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/mast
 CONFIG_FILE = "dnscrypt-proxy.toml"
 SETTINGS_FILE_NAME = "settings.json"
 CACHE_FILE_NAME = "server_cache.json" 
+DNS_BACKUP_FILE_NAME = "dns_backup.json"
 ICON_FILE = "icon.ico"
 
 # --- Console Suppression Helper ---
@@ -111,6 +113,7 @@ class DNSCryptClientGUI:
         
         self.settings_file = os.path.join(self.base_path, SETTINGS_FILE_NAME)
         self.cache_file = os.path.join(self.base_path, CACHE_FILE_NAME)
+        self.dns_backup_file = os.path.join(self.base_path, DNS_BACKUP_FILE_NAME)
 
         self.settings = self.load_settings() 
         
@@ -141,10 +144,13 @@ class DNSCryptClientGUI:
         self.proxy_path_var = tk.StringVar(value=self.settings.get("proxy_executable_path", "") or _default_proxy)
         self.config_dir_var = tk.StringVar(value=self.settings.get("config_dir", "") or _default_cfg_dir)
 
-        # --- FIX: Clean State on Init (Threaded) ---
+        # --- FIX: Recover From a Previous Crashed Session (Threaded) ---
+        # Only acts when this app previously changed the DNS and left a
+        # backup behind; the user's own manual DNS configuration is never
+        # touched on startup.
         def safe_init_cleanup():
             with self.action_lock:
-                self.revert_system_dns()
+                self.restore_dns_backup()
         threading.Thread(target=safe_init_cleanup, daemon=True).start()
 
         atexit.register(self.cleanup)
@@ -177,6 +183,217 @@ class DNSCryptClientGUI:
             startupinfo.wShowWindow = subprocess.SW_HIDE
             kwargs["startupinfo"] = startupinfo
         return kwargs
+
+    # ------------------------------------------------------------------
+    # DNS backup / restore subsystem
+    #
+    # Before the GUI ever touches system DNS it snapshots the exact current
+    # configuration (per adapter on Windows, per network service on macOS,
+    # raw resolv.conf state on Linux). Deactivation restores that snapshot
+    # verbatim instead of blindly resetting everything to DHCP, which used
+    # to destroy manually configured DNS servers.
+    # ------------------------------------------------------------------
+
+    def _run_hidden(self, cmd, check=True):
+        run_args = self._get_hidden_subprocess_args()
+        return subprocess.run(cmd, check=check, capture_output=True, **run_args)
+
+    def _snapshot_dns_windows(self):
+        ps = (
+            "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { "
+            "$a = (Get-DnsClientServerAddress -InterfaceAlias $_.Name "
+            "-AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses; "
+            "[PSCustomObject]@{ alias = $_.Name; servers = @($a) } } | "
+            "ConvertTo-Json -Compress"
+        )
+        result = self._run_hidden([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps
+        ])
+        output = (result.stdout or "").strip()
+        entries = json.loads(output) if output else []
+        if isinstance(entries, dict):
+            entries = [entries]
+        snapshot = {}
+        for entry in entries:
+            alias = str(entry.get("alias", "") or "")
+            if alias:
+                snapshot[alias] = [str(s) for s in (entry.get("servers") or [])]
+        if not snapshot:
+            raise Exception("No active network adapters with DNS configuration were found.")
+        return snapshot
+
+    def _restore_dns_windows(self, snapshot):
+        failures = []
+        for alias, servers in snapshot.items():
+            safe_alias = alias.replace("'", "''")
+            if servers:
+                addr_list = ", ".join(f"'{s}'" for s in servers)
+                ps = (f"Set-DnsClientServerAddress -InterfaceAlias '{safe_alias}' "
+                      f"-ServerAddresses {addr_list} -Confirm:$false")
+            else:
+                ps = f"Reset-DnsClientServerAddress -InterfaceAlias '{safe_alias}' -Confirm:$false"
+            result = self._run_hidden(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                check=False,
+            )
+            if result.returncode != 0:
+                failures.append(alias)
+        return failures
+
+    def _list_mac_services(self):
+        result = self._run_hidden(["networksetup", "-listallnetworkservices"])
+        services = []
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith('*'):
+                continue
+            if 'denotes' in stripped.lower():
+                continue  # legend line, not a service name
+            services.append(stripped)
+        return services
+
+    def _snapshot_dns_macos(self):
+        run_args = self._get_hidden_subprocess_args()
+        snapshot = {}
+        for service in self._list_mac_services():
+            result = subprocess.run(
+                ["networksetup", "-getdnsservers", service],
+                check=False, capture_output=True, **run_args
+            )
+            out = (result.stdout or "").strip()
+            if not out or out.startswith("There aren't any DNS Servers"):
+                snapshot[service] = None  # DHCP-managed; restore to 'empty'
+            else:
+                snapshot[service] = out.splitlines()
+        return snapshot
+
+    def _restore_dns_macos(self, snapshot):
+        run_args = self._get_hidden_subprocess_args()
+        failures = []
+        for service, servers in snapshot.items():
+            cmd = ["networksetup", "-setdnsservers", service]
+            cmd += list(servers) if servers else ["empty"]
+            result = subprocess.run(cmd, check=False, capture_output=True, **run_args)
+            if result.returncode != 0:
+                failures.append(service)
+        return failures
+
+    def _snapshot_dns_linux(self):
+        path = "/etc/resolv.conf"
+        if not os.path.exists(path):
+            return {"exists": False, "is_symlink": False, "target": "", "content": ""}
+        is_link = os.path.islink(path)
+        with open(path, "rb") as fh:
+            content = base64.b64encode(fh.read()).decode("ascii")
+        target = os.readlink(path) if is_link else ""
+        return {"exists": True, "is_symlink": is_link, "target": target, "content": content}
+
+    def _restore_dns_linux(self, snapshot):
+        path = "/etc/resolv.conf"
+        try:
+            if os.path.lexists(path):
+                os.remove(path)
+        except OSError:
+            pass
+        if not snapshot.get("exists"):
+            return []
+        try:
+            if snapshot.get("is_symlink") and snapshot.get("target"):
+                os.symlink(snapshot["target"], path)
+            else:
+                with open(path, "wb") as fh:
+                    fh.write(base64.b64decode(snapshot.get("content") or ""))
+                os.chmod(path, 0o644)
+        except OSError:
+            return ["/etc/resolv.conf"]
+        return []
+
+    def create_dns_backup(self):
+        """Snapshot current system DNS before it is modified.
+
+        Raises when a reliable snapshot cannot be taken so callers can abort
+        activation rather than risk an unrestorable change."""
+        if os.path.exists(self.dns_backup_file):
+            return  # untouched backup from a previous session takes priority
+        system = platform.system()
+        if system == "Windows":
+            payload = {"platform": system, "adapters": self._snapshot_dns_windows()}
+        elif system == "Darwin":
+            payload = {"platform": system, "services": self._snapshot_dns_macos()}
+        elif system == "Linux":
+            payload = {"platform": system, **self._snapshot_dns_linux()}
+        else:
+            return
+        tmp_path = self.dns_backup_file + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp_path, self.dns_backup_file)
+
+    def restore_dns_backup(self):
+        """Restore the exact pre-GUI DNS configuration.
+
+        Returns True when a backup existed and was applied. When no backup
+        exists this deliberately does nothing - it must never guess."""
+        try:
+            with open(self.dns_backup_file, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False  # corrupt backup: caller decides on fallback policy
+        system = platform.system()
+        if payload.get("platform") != system:
+            return False
+        if system == "Windows":
+            failures = self._restore_dns_windows(payload.get("adapters", {}))
+        elif system == "Darwin":
+            failures = self._restore_dns_macos(payload.get("services", {}))
+        elif system == "Linux":
+            failures = self._restore_dns_linux(payload)
+        else:
+            failures = []
+        try:
+            os.remove(self.dns_backup_file)
+        except OSError:
+            pass
+        return not failures
+
+    def stop_proxy_only(self):
+        """Terminate the dnscrypt-proxy child process without any other
+        teardown - safe to call from mid-session failure paths."""
+        proc = self.proxy_process
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self.proxy_process = None
+
+    def manual_restore_dns(self):
+        """Safety hatch: put the system DNS back the way the user had it."""
+        if not self.action_lock.acquire(blocking=False):
+            self.status_var.set("Busy - please wait for the current operation to finish.")
+            return
+        self.action_lock.release()
+        threading.Thread(target=self._manual_restore_worker, daemon=True).start()
+
+    def _manual_restore_worker(self):
+        with self.action_lock:
+            if self.active_server_info:
+                self.deactivate_dns()
+                return
+            if os.path.exists(self.dns_backup_file):
+                restored = self.restore_dns_backup()
+                message = ("System DNS restored to your previous settings."
+                           if restored else
+                           "Restore failed - see log for details.")
+            else:
+                message = "No saved DNS state to restore (nothing was changed)."
+            self.root.after(0, lambda m=message: self.status_var.set(m))
 
     def load_app_icon(self):
         potential_paths = []
@@ -232,7 +449,10 @@ class DNSCryptClientGUI:
 
         self.status_indicator = ttk.Label(activation_frame, text="STATUS: INACTIVE", style="Inactive.TLabel")
         self.status_indicator.pack(side=tk.LEFT, padx=10)
-        
+
+        self.restore_dns_button = ttk.Button(activation_frame, text="Restore DNS", command=self.manual_restore_dns)
+        self.restore_dns_button.pack(side=tk.LEFT, padx=(0, 10))
+
         self.active_server_label = ttk.Label(activation_frame, text="No server active.")
         self.active_server_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=10)
 
@@ -910,7 +1130,8 @@ class DNSCryptClientGUI:
             # Parent is gone - clean up before exiting ourselves.
             try:
                 if self.active_server_info:
-                    self.revert_system_dns()
+                    if not self.restore_dns_backup():
+                        self.revert_system_dns()
             except Exception:
                 pass
             _stop_proxy()
@@ -970,8 +1191,22 @@ class DNSCryptClientGUI:
                 
         except Exception as e:
             update_ui('status', "Error starting proxy.")
-            self.root.after(0, lambda: messagebox.showerror("Proxy Start Error", str(e)))
-            self.cleanup()
+            err_text = str(e)
+            self.root.after(0, lambda t=err_text: messagebox.showerror("Proxy Start Error", t))
+            self.stop_proxy_only()
+            self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
+            return
+
+        try:
+            self.create_dns_backup()
+        except Exception as e:
+            err_text = str(e)
+            update_ui('status', "Activation aborted - could not back up current DNS settings.")
+            self.root.after(0, lambda t=err_text: messagebox.showerror(
+                "DNS Backup Failed",
+                "Activation was aborted because your current system DNS settings "
+                f"could not be captured for a safe restore.\n\n{err_text}"))
+            self.stop_proxy_only()
             self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
             return
 
@@ -983,7 +1218,8 @@ class DNSCryptClientGUI:
              time.sleep(1) 
 
         if not success:
-             update_ui('status', "Failed to set system DNS."); self.cleanup()
+             update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
+             self.restore_dns_backup()
              self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
              return
         
@@ -1009,8 +1245,11 @@ class DNSCryptClientGUI:
             except subprocess.TimeoutExpired:
                 self.proxy_process.kill()
             self.proxy_process = None
-            
-        self.revert_system_dns()
+
+        # Exact restoration of the user's previous DNS configuration; the
+        # reset-to-DHCP path is only a last resort when no backup exists.
+        if not self.restore_dns_backup():
+            self.revert_system_dns()
         
         def final_ui_reset():
             self.active_server_info = []
@@ -1056,12 +1295,9 @@ class DNSCryptClientGUI:
     def cleanup(self):
         self.is_exiting = True
         if self.active_server_info:
-            if self.proxy_process:
-                self.proxy_process.terminate()
-                try:
-                    self.proxy_process.wait(timeout=1)
-                except: pass
-            self.revert_system_dns()
+            self.stop_proxy_only()
+            if not self.restore_dns_backup():
+                self.revert_system_dns()
 
     def start_fetch(self):
         threading.Thread(target=self._prepare_and_fetch, daemon=True).start()
