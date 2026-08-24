@@ -1,6 +1,10 @@
 """Tests for dnscrypt-proxy.toml generation and sanitisation logic."""
 import tomllib
 
+import pytest
+
+from conftest import mod
+
 
 class TestCleanServerName:
     def test_strips_invalid_characters(self, gui):
@@ -175,3 +179,44 @@ class TestStaleRelayRegression:
         for route in routes:
             for via in route["via"]:
                 assert via in static_keys, f"dangling relay '{via}'"
+
+class TestMalformedRelayMappings:
+    """Hand-edited or corrupted settings must never crash generation."""
+
+    def _generate(self, gui, sample_servers, relay_map):
+        gui.server_relay_map = relay_map
+        gui.relay_data = [{"name": "relay-one", "stamp": "sdns://AQRRRUxBWSAAAAA="}]
+        return tomllib.loads(gui._generate_config_content(sample_servers))
+
+    @pytest.mark.parametrize("bad_value", [5, {"a": 1}, None, True, [["nested"]]])
+    def test_garbage_mapping_types_are_ignored(self, gui, sample_servers, bad_value):
+        parsed = self._generate(gui, sample_servers, {"example-a": bad_value})
+        assert parsed.get("anonymized_dns", {}).get("routes", []) == []
+
+    def test_duplicate_relays_in_one_mapping_deduped(self, gui, sample_servers):
+        parsed = self._generate(gui, sample_servers, {"example-a": ["relay-one", "relay-one"]})
+        routes = parsed["anonymized_dns"]["routes"]
+        assert len(routes) == 1
+        assert routes[0]["via"] == ["relayone"]
+
+    def test_non_string_entries_within_list_skipped(self, gui, sample_servers):
+        parsed = self._generate(gui, sample_servers, {"example-a": ["relay-one", 7]})
+        assert parsed["anonymized_dns"]["routes"][0]["via"] == ["relayone"]
+
+    def test_valid_string_shorthand_still_works(self, gui, sample_servers):
+        parsed = self._generate(gui, sample_servers, {"example-a": "relay-one"})
+        assert parsed["anonymized_dns"]["routes"][0]["via"] == ["relayone"]
+
+
+class TestTreeValuesDefaults:
+    def test_missing_optional_fields_get_defaults(self):
+        values = mod.DNSCryptClientGUI._tree_values({"name": "x"}, "")
+        assert values[0] == "x"
+        assert values[1] == "?"
+        assert values[3:] == ("\u2717", "\u2717", "\u2717")
+
+    def test_present_fields_preserved(self):
+        server = {"name": "x", "proto_type": "DoH",
+                  "no-log": "\u2713", "dnssec": "\u2713", "no-filter": "\u2717"}
+        values = mod.DNSCryptClientGUI._tree_values(server, "via-relay")
+        assert values == ("x", "DoH", "via-relay", "\u2713", "\u2713", "\u2717")
