@@ -24,6 +24,11 @@ venv/
 *.log
 boot_log.txt
 
+# App runtime state (created next to the script / in app-data)
+settings.json
+server_cache.json
+dns_backup.json
+
 # OS junk
 .DS_Store
 Thumbs.db
