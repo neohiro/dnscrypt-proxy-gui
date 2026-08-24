@@ -55,6 +55,9 @@ def make_gui():
     gui.is_exiting = False
     gui.is_initialized = True
     gui.base_path = REPO_ROOT
+    gui.sort_stack = []
+    gui.sort_dirs = {}
+    gui.settings = {}
 
     gui.block_ipv6_var = FakeVar(False)
     gui.require_dnssec_var = FakeVar(False)
