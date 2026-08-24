@@ -78,6 +78,7 @@ class DNSCryptClientGUI:
         self.proxy_process = None
         self.proxy_log_tail = collections.deque(maxlen=40)
         self._proxy_log_thread = None
+        self._proxy_job_handle = None
         
         self.action_lock = threading.Lock() 
         self.tray_icon = None 
@@ -806,6 +807,115 @@ class DNSCryptClientGUI:
         )
         self._proxy_log_thread.start()
 
+    def _attach_parent_death_guards(self, parent_pid):
+        """Make sure the proxy cannot outlive the GUI.
+
+        A force-killed GUI would otherwise leave dnscrypt-proxy orphaned while
+        system DNS still points at 127.0.0.1 - an instant, silent outage.
+        - Windows: put the proxy in a kill-on-close Job Object owned by this
+          process; the kernel kills it whenever our last handle disappears.
+        - POSIX: a watchdog thread notices the parent disappearing (getppid
+          changes) and shuts the proxy down, restoring system DNS first."""
+        if platform.system() == "Windows":
+            self._assign_windows_job_object()
+        else:
+            threading.Thread(
+                target=self._posix_parent_watchdog,
+                args=(parent_pid,),
+                daemon=True,
+                name="parent-watchdog",
+            ).start()
+
+    def _assign_windows_job_object(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class IO_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_uint64),
+                    ("WriteOperationCount", ctypes.c_uint64),
+                    ("OtherOperationCount", ctypes.c_uint64),
+                    ("ReadTransferCount", ctypes.c_uint64),
+                    ("WriteTransferCount", ctypes.c_uint64),
+                    ("OtherTransferCount", ctypes.c_uint64),
+                ]
+
+            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ("IoInfo", IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            JobObjectExtendedLimitInformation = 9
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+            kernel32 = ctypes.windll.kernel32
+            hjob = kernel32.CreateJobObjectW(None, None)
+            if not hjob:
+                return
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(
+                hjob,
+                JobObjectExtendedLimitInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                kernel32.CloseHandle(hjob)
+                return
+            if kernel32.AssignProcessToJobObject(
+                hjob, int(self.proxy_process._handle)
+            ):
+                self._proxy_job_handle = hjob  # keep alive for process lifetime
+            else:
+                kernel32.CloseHandle(hjob)
+        except Exception:
+            pass  # best-effort hardening only
+
+    def _posix_parent_watchdog(self, parent_pid):
+        def _stop_proxy():
+            proc = self.proxy_process
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+        while True:
+            time.sleep(2)
+            if os.getppid() == parent_pid:
+                continue
+            # Parent is gone - clean up before exiting ourselves.
+            try:
+                if self.active_server_info:
+                    self.revert_system_dns()
+            except Exception:
+                pass
+            _stop_proxy()
+            os._exit(0)
+
     def activate_dns(self, server_list):
         def update_ui(key, value):
             self.root.after(0, lambda: self.status_var.set(value) if key == 'status' else None)
@@ -842,6 +952,7 @@ class DNSCryptClientGUI:
                 **popen_args
             )
             self._start_proxy_log_drain()
+            self._attach_parent_death_guards(os.getpid())
 
             start_time = time.time()
             is_alive = True
