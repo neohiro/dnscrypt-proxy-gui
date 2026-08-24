@@ -1,10 +1,13 @@
+#!/usr/bin/env python3
+"""DNSCrypt Proxy GUI - cross-platform controller for dnscrypt-proxy."""
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 # import requests # Moved to local scope for faster startup
 import threading
 import os
 import sys
 import subprocess
+import shutil
 import platform
 import atexit
 import time
@@ -15,11 +18,9 @@ import re
 try:
     from pystray import MenuItem as item, Icon as icon
     from PIL import Image, ImageTk
+    TRAY_AVAILABLE = True
 except ImportError:
-    try:
-        pass
-    except:
-        pass
+    TRAY_AVAILABLE = False
 
 if platform.system() == "Windows":
     import winreg
@@ -126,6 +127,16 @@ class DNSCryptClientGUI:
         self.cache_min_ttl_var.set(self.settings.get("cache_min_ttl", "60"))
         self.server_relay_map = self.settings.get("server_relay_map", {})
 
+        # --- Configurable system paths (#3): sensible per-OS defaults ---
+        is_windows = platform.system() == "Windows"
+        _default_proxy = os.path.join(self.base_path, "dnscrypt-proxy" + (".exe" if is_windows else ""))
+        if is_windows:
+            _default_cfg_dir = self.base_path
+        else:
+            _default_cfg_dir = "/etc/dnscrypt-proxy"
+        self.proxy_path_var = tk.StringVar(value=self.settings.get("proxy_executable_path", "") or _default_proxy)
+        self.config_dir_var = tk.StringVar(value=self.settings.get("config_dir", "") or _default_cfg_dir)
+
         # --- FIX: Clean State on Init (Threaded) ---
         def safe_init_cleanup():
             with self.action_lock:
@@ -175,18 +186,28 @@ class DNSCryptClientGUI:
                 try:
                     self.icon_path = p
                     self.root.iconbitmap(self.icon_path)
-                    self.app_icon_image = Image.open(self.icon_path)
+                    if TRAY_AVAILABLE:
+                        self.app_icon_image = Image.open(self.icon_path)
                     break
                 except Exception: pass
 
     def check_proxy_executable(self):
-        self.proxy_executable = "dnscrypt-proxy"
-        if platform.system() == "Windows": self.proxy_executable += ".exe"
-        abs_proxy = os.path.join(self.base_path, self.proxy_executable)
-        if os.path.exists(abs_proxy):
-            self.proxy_executable = abs_proxy
-        elif not os.path.exists(self.proxy_executable):
-            messagebox.showwarning("Executable Not Found", f"'{self.proxy_executable}' not found in\n{self.base_path}\n\nPlease place dnscrypt-proxy.exe in this folder.")
+        candidate = self.proxy_path_var.get().strip()
+        if not candidate:
+            exe_name = "dnscrypt-proxy" + (".exe" if platform.system() == "Windows" else "")
+            local_candidate = os.path.join(self.base_path, exe_name)
+            candidate = local_candidate if os.path.exists(local_candidate) else exe_name
+        self.proxy_executable = candidate
+        found = os.path.isfile(candidate) or bool(shutil.which(candidate))
+        if found:
+            self.activate_button.config(state=tk.NORMAL)
+        else:
+            messagebox.showwarning(
+                "Executable Not Found",
+                f"'{candidate}' was not found.\n\n"
+                "Place dnscrypt-proxy next to the GUI, install it on your PATH, "
+                "or set the exact location on the Configuration tab."
+            )
             self.activate_button.config(state=tk.DISABLED)
 
     def setup_widgets(self):
@@ -283,6 +304,24 @@ class DNSCryptClientGUI:
         self.status_var.set("Ready.")
 
     def _create_config_tab(self, parent):
+        paths_frame = ttk.LabelFrame(parent, text="System Paths", padding=10)
+        paths_frame.pack(fill=tk.X, pady=5, padx=5)
+
+        proxy_row = ttk.Frame(paths_frame); proxy_row.pack(fill=tk.X, pady=3)
+        ttk.Label(proxy_row, text="dnscrypt-proxy executable:", width=24).pack(side=tk.LEFT)
+        ttk.Entry(proxy_row, textvariable=self.proxy_path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        ttk.Button(proxy_row, text="Browse...",
+                   command=lambda: self._browse_path(self.proxy_path_var, "file")).pack(side=tk.RIGHT)
+
+        cfgdir_row = ttk.Frame(paths_frame); cfgdir_row.pack(fill=tk.X, pady=3)
+        ttk.Label(cfgdir_row, text="Configuration folder:", width=24).pack(side=tk.LEFT)
+        ttk.Entry(cfgdir_row, textvariable=self.config_dir_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        ttk.Button(cfgdir_row, text="Browse...",
+                   command=lambda: self._browse_path(self.config_dir_var, "dir")).pack(side=tk.RIGHT)
+
+        ttk.Button(paths_frame, text="Apply & Restart Proxy",
+                   command=self._apply_paths_and_restart).pack(anchor=tk.E, pady=(5, 0))
+
         req_frame = ttk.LabelFrame(parent, text="Server Requirements", padding=10)
         req_frame.pack(fill=tk.X, pady=5, padx=5)
         
@@ -317,6 +356,26 @@ class DNSCryptClientGUI:
 
         ttk.Label(parent, text="Changes are applied immediately if the service is active.", style="Status.TLabel").pack(pady=20)
     
+    def _browse_path(self, target_var, kind):
+        if kind == "file":
+            chosen = filedialog.askopenfilename(
+                title="Select dnscrypt-proxy executable",
+                parent=self.root,
+            )
+        else:
+            chosen = filedialog.askdirectory(title="Select configuration folder", parent=self.root)
+        if chosen:
+            target_var.set(chosen)
+            self.save_settings()
+
+    def _apply_paths_and_restart(self):
+        self.save_settings()
+        self.check_proxy_executable()
+        if self.active_server_info:
+            self.update_config_and_restart_proxy()
+        else:
+            self.status_var.set("Paths saved.")
+
     def save_settings(self):
         if self.is_exiting or not self.is_initialized:
             return
@@ -339,7 +398,9 @@ class DNSCryptClientGUI:
             "require_nofilter": self.require_nofilter_var.get(),
             "cache_size": self.cache_size_var.get(),
             "cache_neg_ttl": self.cache_neg_ttl_var.get(),
-            "cache_min_ttl": self.cache_min_ttl_var.get()
+            "cache_min_ttl": self.cache_min_ttl_var.get(),
+            "proxy_executable_path": self.proxy_path_var.get(),
+            "config_dir": self.config_dir_var.get()
         }
         try:
             with open(self.settings_file, 'w') as f:
@@ -385,6 +446,11 @@ class DNSCryptClientGUI:
         self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
 
     def hide_window(self):
+        if not TRAY_AVAILABLE:
+            # No system-tray backend available - minimising keeps the app
+            # reachable instead of hiding it with no way back.
+            self.root.iconify()
+            return
         self.root.withdraw()
         def start_icon_thread():
             try:
@@ -721,7 +787,16 @@ class DNSCryptClientGUI:
         update_ui('disable_button', True)
 
         try:
-            config_path = os.path.join(self.base_path, CONFIG_FILE)
+            config_dir = self.config_dir_var.get().strip() or self.base_path
+            try:
+                os.makedirs(config_dir, exist_ok=True)
+            except PermissionError:
+                raise Exception(
+                    f"No permission to write the configuration folder:\n{config_dir}\n\n"
+                    "On Linux/macOS run the GUI with sudo, or pick a writable folder "
+                    "on the Configuration tab."
+                )
+            config_path = os.path.join(config_dir, CONFIG_FILE)
             with open(config_path, "w", encoding='utf-8') as f: f.write(self._generate_config_content(server_list))
             
             popen_args = self._get_hidden_subprocess_args()

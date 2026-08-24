@@ -8,7 +8,7 @@ on:
       tag:
         description: 'Release tag to attach binaries to'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.3'
 
 permissions:
   contents: write
@@ -20,10 +20,19 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "building $TAG (product version $VERSION)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,7 +40,6 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-          
       - name: Install System Dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -45,23 +53,42 @@ jobs:
 
       - name: Build Windows Executable
         if: matrix.os == 'windows-latest'
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico dnscrypt-proxy-gui.PY
-          Compress-Archive -Path "dist\dnscrypt-proxy-gui" -DestinationPath "dnscrypt-proxy-gui-Windows.zip" -Force
+          # Version metadata so Explorer shows a proper ProductVersion (#4)
+          $maj, $min, $patch = $env:APP_VERSION.Split('.')
+          @(
+            'VSVersionInfo(',
+            '  ffi=FixedFileInfo(',
+            "    filevers=($maj, $min, $patch, 0), prodvers=($maj, $min, $patch, 0),",
+            '    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),',
+            '  kids=[',
+            "    StringFileInfo([StringTable('040904B0', [StringStruct('CompanyName', 'neohiro'), StringStruct('ProductName', 'DNSCrypt Proxy GUI'), StringStruct('ProductVersion', '$env:APP_VERSION'), StringStruct('FileVersion', '$env:APP_VERSION')])]),",
+            "    VarFileInfo([VarStruct('Translation', [1033, 1200])])",
+            '  ]',
+            ')'
+          ) | Set-Content -Path version.txt -Encoding Ascii
+          pyinstaller --noconfirm --onedir --windowed --icon=icon.ico --version-file=version.txt dnscrypt-proxy-gui.PY
+          Compress-Archive -Path "dist\dnscrypt-proxy-gui" -DestinationPath "dnscrypt-proxy-gui-$($env:APP_VERSION)-Windows-x64.zip" -Force
 
       - name: Build macOS Executable
         if: matrix.os == 'macos-latest'
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           pyinstaller --noconfirm --onedir --windowed --icon=icon.icns dnscrypt-proxy-gui.PY
           cd dist
-          zip -r ../dnscrypt-proxy-gui-macOS.zip dnscrypt-proxy-gui.app
+          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-macOS.zip" dnscrypt-proxy-gui.app
 
       - name: Build Linux Executable
         if: matrix.os == 'ubuntu-latest'
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           pyinstaller --noconfirm --onedir --windowed --icon=icon.png dnscrypt-proxy-gui.PY
           cd dist
-          zip -r ../dnscrypt-proxy-gui-Linux.zip dnscrypt-proxy-gui
+          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-Linux.zip" dnscrypt-proxy-gui
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -83,7 +110,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create Release
+      - name: Attach to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}

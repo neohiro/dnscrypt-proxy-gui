@@ -43,9 +43,10 @@ You can either download the pre-compiled standalone executables (Recommended) or
 
 We provide high-quality, pre-built executables for Windows, macOS, and Linux. No Python installation required!
 
-1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the `.zip` file for your operating system.
-2. Extract the `.zip` archive to a folder of your choice.
-3. **Important:** Download the official `dnscrypt-proxy` executable for your OS from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
+1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the archive matching your OS and version - e.g. `dnscrypt-proxy-gui-1.0.3-Windows-x64.zip`.
+2. Extract it into **its own dedicated folder** (e.g. `C:\Program Files\dnscrypt-proxy-gui\`, `~/Applications/dnscrypt-proxy-gui/`, or `~/dnscrypt-proxy-gui/`). Never extract the contents loose into `Program Files` itself - the folder contains the app plus its runtime libraries.
+3. **macOS users:** the app is not codesigned, so on first launch right-click the app and choose **Open** (or allow it in *System Settings → Privacy & Security*). Also grab the official `dnscrypt-proxy` binary from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases) and keep it beside the app (or set its path in Configuration → System Paths).
+4. **Important:** Download the official `dnscrypt-proxy` executable for your OS from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
 4. Place the `dnscrypt-proxy` executable (e.g., `dnscrypt-proxy.exe` on Windows) **in the same folder** as the GUI executable.
 5. Run the GUI executable. (It will automatically request administrator/sudo privileges).
 
@@ -57,7 +58,11 @@ If you prefer to run the Python script directly, follow these steps:
 
 #### 1. Prerequisites
 - **Python 3.11+**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/downloads/).
+  - **Debian/Ubuntu**: also install the GUI toolkit with `sudo apt install python3-tk`
+  - **Fedora**: `sudo dnf install python3-tkinter`
+  - **Arch**: tk is bundled with the `tk` package (`sudo pacman -S tk`)
 - **dnscrypt-proxy**: Download the latest version for your OS from the [official DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
+  - On Linux it is usually available from your distro's repositories (`sudo apt install dnscrypt-proxy`) - the GUI will find it at `/usr/bin/dnscrypt-proxy` by default.
 
 #### 2. Get the Code
 Clone this repository or download the source code:
@@ -67,10 +72,15 @@ cd dnscrypt-proxy-gui
 ```
 
 #### 3. Install Dependencies
-Install the required Python libraries using `pip`:
+Create a virtual environment and install the required libraries:
 ```bash
-pip install requests pystray Pillow
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt   # requests, pystray, Pillow
 ```
+
+> The system tray icon needs `pystray` + `Pillow`. Without them the GUI still
+> works - closing the window minimises it to your taskbar instead of the tray.
 
 #### 4. Prepare the Directory
 Extract the `dnscrypt-proxy` archive you downloaded earlier and place the executable inside the cloned repository. Your directory should look like this:
@@ -81,10 +91,40 @@ dnscrypt-proxy-gui/
 ```
 
 #### 5. Run the Script
-Execute the script from your terminal. It will prompt for necessary network administrator privileges:
-```bash
+
+**Windows:**
+```bat
 python dnscrypt-proxy-gui.PY
 ```
+
+**Linux / macOS:**
+```bash
+python3 dnscrypt-proxy-gui.PY
+```
+
+> **Do not run the script through the shell directly** (e.g. `./dnscrypt-proxy-gui.PY`)
+> unless you have made it executable first (`chmod +x`). If you see errors like
+> `from: not found`, your shell is trying to interpret Python as shell script -
+> always launch it via `python3`.
+
+> **Activating servers changes system DNS settings**, which requires elevated
+> privileges. On Linux/macOS either start the GUI with `sudo` (using the same
+> virtual environment: `sudo .venv/bin/python3 dnscrypt-proxy-gui.PY`) or point
+> the Configuration tab's *System Paths* at a proxy/config location your user can write.
+
+---
+
+### System Paths (Linux / macOS)
+
+By default the GUI looks for:
+
+| What | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| `dnscrypt-proxy` executable | next to the GUI | `/usr/bin/dnscrypt-proxy` or on `$PATH` | `/usr/local/bin/dnscrypt-proxy` or on `$PATH` |
+| Configuration folder | next to the GUI | `/etc/dnscrypt-proxy` | `/usr/local/etc/dnscrypt-proxy` |
+
+Both locations are configurable in the **Configuration → System Paths** section -
+set them once and they persist in `settings.json`.
 
 ---
 
