@@ -186,6 +186,8 @@ class DNSCryptClientGUI:
         self.server_data = []
         self.relay_data = [] 
         self.server_relay_map = {} 
+        self._server_by_name = {}
+        self.fetch_etags = {}
         self.active_server_info = []
         self.proxy_process = None
         self.proxy_log_tail = collections.deque(maxlen=40)
@@ -826,6 +828,7 @@ class DNSCryptClientGUI:
         cache_data = {
             "servers": self.server_data,
             "relays": self.relay_data,
+            "etags": self.fetch_etags,
             "timestamp": time.time()
         }
         try:
@@ -842,6 +845,8 @@ class DNSCryptClientGUI:
                 data = json.load(f)
                 self.server_data = data.get("servers", [])
                 self.relay_data = data.get("relays", [])
+                self.fetch_etags = data.get("etags", {})
+                self._server_by_name = {s["name"]: s for s in self.server_data}
                 self.server_cache_ts = data.get("timestamp")
                 return True
         except Exception:
@@ -1108,7 +1113,7 @@ class DNSCryptClientGUI:
             messagebox.showinfo("Selection", "Please select a server first."); return
 
         for server_name in selected_items:
-            server_info = next((s for s in self.server_data if s["name"] == server_name), None)
+            server_info = self._server_by_name.get(server_name)
             if server_info and server_info.get('proto_type') != "DNSCrypt":
                  messagebox.showwarning("Protocol Error", "Relays can ONLY be assigned to DNSCrypt protocols."); return
 
@@ -1621,11 +1626,30 @@ class DNSCryptClientGUI:
     def _fetch_and_parse_servers(self):
         try:
             import requests
-            headers = {'User-Agent': f'{APP_NAME}/{APP_VERSION}'}
-            resp_res = requests.get(RESOLVERS_URL, timeout=15, headers=headers); resp_res.raise_for_status()
-            self.server_data = self._parse_markdown_list(resp_res.text)
-            resp_rel = requests.get(RELAYS_URL, timeout=15, headers=headers); resp_rel.raise_for_status()
-            self.relay_data = self._parse_markdown_list(resp_rel.text)
+            session = requests.Session()
+            session.headers.update({'User-Agent': f'{APP_NAME}/{APP_VERSION}'})
+
+            # Conditional GETs: unchanged upstream lists return 304 and cost
+            # almost nothing, which makes "Refresh" cheap for everyone.
+            def conditional_get(url):
+                headers = {}
+                if self.server_data and self.fetch_etags.get(url):
+                    headers['If-None-Match'] = self.fetch_etags[url]
+                return session.get(url, timeout=15, headers=headers)
+
+            resp_res = conditional_get(RESOLVERS_URL)
+            if resp_res.status_code == 200:
+                self.server_data = self._parse_markdown_list(resp_res.text)
+                self.fetch_etags[RESOLVERS_URL] = resp_res.headers.get('ETag')
+            elif resp_res.status_code != 304:
+                resp_res.raise_for_status()
+
+            resp_rel = conditional_get(RELAYS_URL)
+            if resp_rel.status_code == 200:
+                self.relay_data = self._parse_markdown_list(resp_rel.text)
+                self.fetch_etags[RELAYS_URL] = resp_rel.headers.get('ETag')
+            elif resp_rel.status_code != 304:
+                resp_rel.raise_for_status()
             
             for server in self.server_data:
                 server['proto_type'] = "DNSCrypt" if server['stamp'].startswith("sdns://AQ") else ("DoH" if server['stamp'].startswith("sdns://Ag") else "Other")
@@ -1659,6 +1683,7 @@ class DNSCryptClientGUI:
             self.root.after(0, lambda m=err_text: handle_error(m))
 
     def on_fetch_complete(self):
+        self._server_by_name = {s["name"]: s for s in self.server_data}
         self._populate_tree(self.server_data)
         self.is_initialized = True
         if not self.active_server_info:
@@ -1688,12 +1713,15 @@ class DNSCryptClientGUI:
         if not self.active_server_info:
             self.activate_button.config(state=tk.NORMAL if (selected_items and os.path.exists(self.proxy_executable)) else tk.DISABLED)
         
-        can_bridge = bool(selected_items) and all(next((x for x in self.server_data if x["name"] == name), {}).get('proto_type') == "DNSCrypt" for name in selected_items)
+        can_bridge = bool(selected_items) and all(
+            (self._server_by_name.get(name) or {}).get('proto_type') == "DNSCrypt"
+            for name in selected_items
+        )
         self.bridge_button.config(state=tk.NORMAL if can_bridge else tk.DISABLED)
 
         focused_id = self.tree.focus()
         if focused_id:
-            s = next((s for s in self.server_data if s["name"] == focused_id), None)
+            s = self._server_by_name.get(focused_id)
             if s:
                 relay_list = self.server_relay_map.get(s["name"], [])
                 relay_info = ", ".join(relay_list if isinstance(relay_list, list) else [relay_list]) or "None"
