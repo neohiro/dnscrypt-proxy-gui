@@ -58,6 +58,8 @@ def make_gui():
     gui.sort_stack = []
     gui.sort_dirs = {}
     gui.settings = {}
+    gui.tray_broken = False
+    gui._auto_activation_started = False
 
     gui.block_ipv6_var = FakeVar(False)
     gui.require_dnssec_var = FakeVar(False)
