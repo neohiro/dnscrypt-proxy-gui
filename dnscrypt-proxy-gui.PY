@@ -1144,13 +1144,27 @@ class DNSCryptClientGUI:
         for i, server in enumerate(filtered_list):
             relays = self.server_relay_map.get(server["name"], [])
             if isinstance(relays, str): relays = [relays] if relays else []
-            values = (server["name"], server.get('proto_type', '?'), ", ".join(relays), server["no-log"], server["dnssec"], server["no-filter"])
-            
+            if not isinstance(relays, list): relays = []
+            values = self._tree_values(server, ", ".join(relays))
+
             tag = 'oddrow' if i % 2 != 0 else 'evenrow'
             self.tree.insert("", tk.END, values=values, iid=server["name"], tags=(tag,))
-            
+
         self.status_var.set(f"Showing {len(filtered_list)} servers ({len(self.server_data)} total) and {len(self.relay_data)} relays.")
         self.apply_current_sorts()
+
+    @staticmethod
+    def _tree_values(server, relays_display):
+        """Row tuple for the server table.
+
+        Uses defaults for fields a cache file may predate, so a partial or
+        hand-edited cache can never raise KeyError at populate time."""
+        return (server["name"],
+                server.get("proto_type", "?"),
+                relays_display,
+                server.get("no-log", "\u2717"),
+                server.get("dnssec", "\u2717"),
+                server.get("no-filter", "\u2717"))
 
     def toggle_activation(self):
         if self.active_server_info:
@@ -1353,12 +1367,23 @@ class DNSCryptClientGUI:
             
             relay_list = self.server_relay_map.get(server_info['name'])
             if isinstance(relay_list, str): relay_list = [relay_list] if relay_list else []
-            
+            elif not isinstance(relay_list, list):
+                # Hand-edited or corrupted settings must not crash config
+                # generation - an unusable mapping is simply ignored.
+                LOG.warning("Ignoring malformed relay mapping for %r", server_info['name'])
+                relay_list = []
+
             if relay_list and server_info['stamp'].startswith("sdns://AQ"):
                 # Drop mappings whose relay has vanished from the upstream
                 # list - emitting a route without a matching [static] stamp
                 # would make dnscrypt-proxy exit immediately.
-                valid_relays = [r for r in relay_list if r in known_relay_stamps]
+                seen_relays = set()
+                valid_relays = []
+                for r in relay_list:
+                    if (isinstance(r, str) and r in known_relay_stamps
+                            and r not in seen_relays):
+                        seen_relays.add(r)
+                        valid_relays.append(r)
                 if not valid_relays: continue
                 safe_relays = []
                 for r_name in valid_relays:
@@ -1845,9 +1870,10 @@ class DNSCryptClientGUI:
             s = self._server_by_name.get(focused_id)
             if s:
                 relay_list = self.server_relay_map.get(s["name"], [])
-                relay_info = ", ".join(relay_list if isinstance(relay_list, list) else [relay_list]) or "None"
+                if not isinstance(relay_list, list): relay_list = [relay_list] if relay_list else []
+                relay_info = ", ".join(relay_list) or "None"
                 details = (f"Name: {s['name']}\nProtocol: {s.get('proto_type', 'Unknown')}\nVia Bridge: {relay_info}\n"
-                           f"Desc: {s['description']}\nProps: {s['properties']}\n\nSTAMP:\n{s['stamp']}")
+                           f"Desc: {s.get('description', '')}\nProps: {s.get('properties', '')}\n\nSTAMP:\n{s.get('stamp', 'unknown')}")
                 self.details_text.configure(state='normal'); self.details_text.delete(1.0, tk.END)
                 self.details_text.insert(tk.END, details); self.details_text.configure(state='disabled')
 
