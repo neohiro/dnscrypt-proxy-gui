@@ -1,4 +1,4 @@
-"""Robustness regression tests: name dedupe and auto-activation guard."""
+﻿"""Robustness regression tests: name dedupe and auto-activation guard."""
 import json
 import os
 import types
@@ -91,3 +91,57 @@ class TestAutoActivationGuard:
         gui.preferred_servers = []
         gui.check_auto_activation()
         assert spawned == []
+
+class TestDeactivateStateContract:
+    """update_config_and_restart_proxy checks active_server_info right
+    after deactivate_dns returns on a worker thread; the clear must
+    therefore happen synchronously, not in the queued UI reset."""
+
+    class _InlineRoot:
+        def after(self, ms, fn=None):
+            if fn:
+                fn()
+
+    @staticmethod
+    def _widget():
+        return types.SimpleNamespace(config=lambda **k: None)
+
+    def test_state_clears_before_queued_ui_reset(self, gui, monkeypatch):
+        gui.root = self._InlineRoot()
+        gui.activate_button = self._widget()
+        gui.status_indicator = self._widget()
+        gui.active_server_label = self._widget()
+        gui.status_var = FakeVar("")
+        gui.tree = types.SimpleNamespace(selection=lambda: [])
+        gui.proxy_process = None
+        gui.dns_backup_file = os.path.join("does", "not", "exist.json")
+        gui.save_settings = lambda: None
+        gui.active_server_info = [{"name": "a"}]
+        monkeypatch.setattr(gui.__class__, "_revert_after_restore_attempt",
+                            lambda self: None)
+        gui.deactivate_dns()
+        assert gui.active_server_info == [], (
+            "restart flow must observe the cleared state immediately")
+
+    def test_restart_flow_would_reactivate(self, gui, monkeypatch):
+        """Replicates the update_config_and_restart_proxy decision."""
+        gui.root = self._InlineRoot()
+        gui.activate_button = self._widget()
+        gui.status_indicator = self._widget()
+        gui.active_server_label = self._widget()
+        gui.status_var = FakeVar("")
+        gui.tree = types.SimpleNamespace(selection=lambda: [])
+        gui.proxy_process = None
+        gui.dns_backup_file = os.path.join("does", "not", "exist.json")
+        gui.save_settings = lambda: None
+        gui.active_server_info = [{"name": "a"}]
+        monkeypatch.setattr(gui.__class__, "_revert_after_restore_attempt",
+                            lambda self: None)
+        reactivated = []
+        monkeypatch.setattr(gui, "activate_dns",
+                            lambda servers: reactivated.append(servers))
+        current_servers = gui.active_server_info
+        gui.deactivate_dns()
+        if not gui.active_server_info:
+            gui.activate_dns(current_servers)
+        assert reactivated == [current_servers]
