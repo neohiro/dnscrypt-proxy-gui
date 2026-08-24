@@ -201,6 +201,8 @@ class DNSCryptClientGUI:
         self.proxy_log_tail = collections.deque(maxlen=40)
         self._proxy_log_thread = None
         self._proxy_job_handle = None
+        self.tray_broken = False
+        self._auto_activation_started = False
         
         self.action_lock = threading.Lock() 
         self.tray_icon = None 
@@ -871,8 +873,8 @@ class DNSCryptClientGUI:
             if not os.path.exists(self.cache_file): return False
             with open(self.cache_file, 'r') as f:
                 data = json.load(f)
-                self.server_data = data.get("servers", [])
-                self.relay_data = data.get("relays", [])
+                self.server_data = self._dedupe_by_name(data.get("servers", []))
+                self.relay_data = self._dedupe_by_name(data.get("relays", []))
                 self.fetch_etags = data.get("etags", {})
                 self._server_by_name = {s["name"]: s for s in self.server_data}
                 self.server_cache_ts = data.get("timestamp")
@@ -881,13 +883,32 @@ class DNSCryptClientGUI:
             LOG.debug("Could not load server cache", exc_info=True)
             return False
 
+    @staticmethod
+    def _dedupe_by_name(items):
+        """Drop entries with missing or duplicated names, keeping the first.
+
+        Treeview rows and config static-sections are keyed by name, so a
+        duplicated entry from an upstream mirror or a corrupted cache would
+        raise TclError at populate time and break the whole server table."""
+        seen = set()
+        unique = []
+        for item in items:
+            name = item.get("name") if isinstance(item, dict) else None
+            if not name or name in seen:
+                LOG.warning("Dropping resolver entry with %s name: %r",
+                            "missing" if not name else "duplicate", name)
+                continue
+            seen.add(name)
+            unique.append(item)
+        return unique
+
     def setup_tray_and_close_protocol(self):
         self.root.protocol('WM_DELETE_WINDOW', self.on_close_window)
 
     def on_close_window(self):
-        if not TRAY_AVAILABLE:
-            # No tray icon exists, so closing must not silently strand the
-            # app as an unminimizable ghost - ask the user explicitly.
+        if not TRAY_AVAILABLE or getattr(self, "tray_broken", False):
+            # No working tray icon exists, so closing must not silently
+            # strand the app as an unminimizable ghost - ask explicitly.
             if messagebox.askyesno(
                     "Exit DNSCrypt Client?",
                     "The system tray icon is unavailable.\n"
@@ -933,9 +954,9 @@ class DNSCryptClientGUI:
             pass  # window destroyed - the loop dies with it
 
     def hide_window(self):
-        if not TRAY_AVAILABLE:
-            # No system-tray backend available - minimising keeps the app
-            # reachable instead of hiding it with no way back.
+        if not TRAY_AVAILABLE or getattr(self, "tray_broken", False):
+            # No working system-tray backend - minimising keeps the app
+            # reachable from the taskbar instead of hiding it.
             self.root.iconify()
             return
         self.root.withdraw()
@@ -946,10 +967,13 @@ class DNSCryptClientGUI:
                 with self.tray_lock: self.tray_icon = icon(APP_NAME, image, "DNSCrypt Client", menu)
                 self.tray_icon.run()
                 with self.tray_lock: self.tray_icon = None
-            except Exception as e:
-                print(f"Tray error: {e}")
-                LOG.error("Tray icon crashed", exc_info=True)
-                self.quit_app()
+            except Exception:
+                # Quitting here would silently deactivate a running proxy;
+                # degrade to taskbar mode and let the user stay in control.
+                LOG.error("Tray icon crashed - falling back to taskbar mode",
+                          exc_info=True)
+                self.tray_broken = True
+                self._post_ui(lambda: self.root.iconify())
 
         with self.tray_lock:
             if not (self.tray_thread and self.tray_thread.is_alive()):
@@ -1372,7 +1396,9 @@ class DNSCryptClientGUI:
                     if line:
                         self.proxy_log_tail.append(line.rstrip())
             except Exception:
-                pass
+                # A dead drain thread means diagnostics are incomplete;
+                # say so instead of reporting a misleading empty log.
+                LOG.debug("Proxy stderr drain stopped", exc_info=True)
             finally:
                 try:
                     proc.stderr.close()
@@ -1494,7 +1520,9 @@ class DNSCryptClientGUI:
                 if self.active_server_info:
                     self._revert_after_restore_attempt()
             except Exception:
-                pass
+                # The process is about to exit: this is the last chance to
+                # leave a trace of why DNS could not be restored.
+                LOG.error("Watchdog cleanup failed before exit", exc_info=True)
             _stop_proxy()
             os._exit(0)
 
@@ -1717,14 +1745,16 @@ class DNSCryptClientGUI:
 
             resp_res = conditional_get(RESOLVERS_URL, bool(self.server_data))
             if resp_res.status_code == 200:
-                self.server_data = self._parse_markdown_list(resp_res.text)
+                self.server_data = self._dedupe_by_name(
+                    self._parse_markdown_list(resp_res.text))
                 self.fetch_etags[RESOLVERS_URL] = resp_res.headers.get('ETag')
             elif resp_res.status_code != 304:
                 resp_res.raise_for_status()
 
             resp_rel = conditional_get(RELAYS_URL, bool(self.relay_data))
             if resp_rel.status_code == 200:
-                self.relay_data = self._parse_markdown_list(resp_rel.text)
+                self.relay_data = self._dedupe_by_name(
+                    self._parse_markdown_list(resp_rel.text))
                 self.fetch_etags[RELAYS_URL] = resp_rel.headers.get('ETag')
             elif resp_rel.status_code != 304:
                 resp_rel.raise_for_status()
@@ -1773,7 +1803,8 @@ class DNSCryptClientGUI:
         self.root.after(0, final_ui_update)
         
     def check_auto_activation(self):
-        if not self.preferred_servers: return
+        if not self.preferred_servers or self._auto_activation_started:
+            return
         servers_to_activate = [
             s for s in self.server_data if s["name"] in self.preferred_servers
         ]
@@ -1784,6 +1815,11 @@ class DNSCryptClientGUI:
         if wanted:
             self.tree.selection_set(wanted)
         if servers_to_activate:
+            # check_auto_activation runs both after cache load and after
+            # every fetch; without this flag the second invocation would
+            # queue a second worker that re-spawns the proxy once the
+            # first activation releases the lock.
+            self._auto_activation_started = True
             self.status_var.set(f"Automatically reactivating {len(servers_to_activate)} servers...")
             threading.Thread(target=lambda: self._activation_worker_direct(servers_to_activate), daemon=True).start()
         else:
