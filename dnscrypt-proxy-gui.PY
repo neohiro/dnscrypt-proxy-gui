@@ -34,6 +34,10 @@ if platform.system() == "Windows":
 # --- Constants ---
 APP_NAME = "DNSCryptClientGUI"
 APP_VERSION = "1.0.3"
+
+# dnscrypt-proxy cache tunables. Note: cache_size counts ENTRIES, not bytes.
+CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX = 512, 64, 1 << 20
+CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX = 60, 0, 7 * 24 * 3600
 RESOLVERS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
 RELAYS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md"
 CONFIG_FILE = "dnscrypt-proxy.toml"
@@ -103,6 +107,64 @@ def setup_logging():
 
 LOG = setup_logging()
 
+
+def _writable_dir(candidate):
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        probe = os.path.join(candidate, ".write_probe")
+        with open(probe, "w"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _default_data_directory(base_path):
+    """Settings/cache live next to the executable when possible (portable
+    mode); otherwise fall back to the per-OS application data directory so
+    installs under Program Files / /usr still work."""
+    if _writable_dir(base_path):
+        return base_path
+    system = platform.system()
+    if system == "Windows":
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+        data_dir = os.path.join(root, APP_NAME)
+    elif system == "Darwin":
+        data_dir = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        data_dir = os.path.join(xdg, APP_NAME.lower())
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except OSError:
+        return base_path  # last resort; individual writes will log failures
+    return data_dir
+
+
+def acquire_single_instance_lock():
+    """Best-effort single-instance enforcement.
+
+    Windows uses a named mutex; POSIX an flock'd lock file that the kernel
+    releases automatically on process death. Returns a keep-alive token, or
+    None when another instance is already running."""
+    system = platform.system()
+    if system == "Windows":
+        import ctypes
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\" + APP_NAME)
+        if mutex and ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return None
+        return ("mutex", mutex)
+    lock_path = os.path.join(tempfile.gettempdir(), f"{APP_NAME}.instance.lock")
+    handle = open(lock_path, "w")
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return ("file", handle)
+
 class DNSCryptClientGUI:
     def __init__(self, root):
         self.root = root
@@ -163,9 +225,22 @@ class DNSCryptClientGUI:
         else:
             self.base_path = os.path.dirname(os.path.abspath(__file__))
         
-        self.settings_file = os.path.join(self.base_path, SETTINGS_FILE_NAME)
-        self.cache_file = os.path.join(self.base_path, CACHE_FILE_NAME)
-        self.dns_backup_file = os.path.join(self.base_path, DNS_BACKUP_FILE_NAME)
+        self.data_path = _default_data_directory(self.base_path)
+        self.settings_file = os.path.join(self.data_path, SETTINGS_FILE_NAME)
+        self.cache_file = os.path.join(self.data_path, CACHE_FILE_NAME)
+        self.dns_backup_file = os.path.join(self.data_path, DNS_BACKUP_FILE_NAME)
+
+        # Migrate legacy files that lived next to the executable (portable
+        # setups) into the fallback data directory on first run.
+        if self.data_path != self.base_path:
+            for name in (SETTINGS_FILE_NAME, CACHE_FILE_NAME, DNS_BACKUP_FILE_NAME):
+                src = os.path.join(self.base_path, name)
+                dst = os.path.join(self.data_path, name)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try:
+                        shutil.copy2(src, dst)
+                    except OSError:
+                        LOG.warning("Could not migrate %s: %s", name, src)
 
         self.settings = self.load_settings() 
         
@@ -625,22 +700,26 @@ class DNSCryptClientGUI:
         cache_frame.pack(fill=tk.X, pady=5, padx=5)
 
         size_frame = ttk.Frame(cache_frame); size_frame.pack(fill=tk.X, pady=3)
-        ttk.Label(size_frame, text="Cache size (bytes):", width=25).pack(side=tk.LEFT)
+        # dnscrypt-proxy's cache_size counts cache ENTRIES, not bytes.
+        ttk.Label(size_frame, text="Cache size (entries):", width=25).pack(side=tk.LEFT)
         size_entry = ttk.Entry(size_frame, textvariable=self.cache_size_var, width=15)
         size_entry.pack(side=tk.LEFT, padx=5)
-        size_entry.bind("<FocusOut>", self.update_config_and_restart_proxy)
+        size_entry.bind("<FocusOut>", lambda e: self._validated_cache_apply(
+            self.cache_size_var, CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX, "Cache size"))
 
         min_ttl_frame = ttk.Frame(cache_frame); min_ttl_frame.pack(fill=tk.X, pady=3)
         ttk.Label(min_ttl_frame, text="Cache min TTL (seconds):", width=25).pack(side=tk.LEFT)
         min_ttl_entry = ttk.Entry(min_ttl_frame, textvariable=self.cache_min_ttl_var, width=15)
         min_ttl_entry.pack(side=tk.LEFT, padx=5)
-        min_ttl_entry.bind("<FocusOut>", self.update_config_and_restart_proxy)
+        min_ttl_entry.bind("<FocusOut>", lambda e: self._validated_cache_apply(
+            self.cache_min_ttl_var, CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX, "Cache min TTL"))
 
         neg_ttl_frame = ttk.Frame(cache_frame); neg_ttl_frame.pack(fill=tk.X, pady=3)
         ttk.Label(neg_ttl_frame, text="Cache negative TTL (seconds):", width=25).pack(side=tk.LEFT)
         neg_ttl_entry = ttk.Entry(neg_ttl_frame, textvariable=self.cache_neg_ttl_var, width=15)
         neg_ttl_entry.pack(side=tk.LEFT, padx=5)
-        neg_ttl_entry.bind("<FocusOut>", self.update_config_and_restart_proxy)
+        neg_ttl_entry.bind("<FocusOut>", lambda e: self._validated_cache_apply(
+            self.cache_neg_ttl_var, CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX, "Cache negative TTL"))
 
         ttk.Label(parent, text="Changes are applied immediately if the service is active.", style="Status.TLabel").pack(pady=20)
     
@@ -1025,6 +1104,23 @@ class DNSCryptClientGUI:
         clean = re.sub(r'[^a-zA-Z0-9_]', '', name)
         return clean if clean else "server"
 
+    @staticmethod
+    def _coerce_int(raw, default, lo, hi):
+        """Clamp user input into a safe integer range."""
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            value = default
+        return max(lo, min(hi, value))
+
+    def _validated_cache_apply(self, var, default, lo, hi, label, event=None):
+        raw = var.get().strip()
+        value = self._coerce_int(raw, default, lo, hi)
+        if str(value) != raw:
+            var.set(str(value))
+            self.status_var.set(f"{label} was adjusted to {value}.")
+        self.update_config_and_restart_proxy()
+
     def _generate_config_content(self, server_list):
         safe_server_names = []
         name_map = {} 
@@ -1039,12 +1135,9 @@ class DNSCryptClientGUI:
             safe_server_names.append(safe)
             name_map[safe] = s
 
-        try: cache_size = int(self.cache_size_var.get())
-        except (TypeError, ValueError): cache_size = 512
-        try: cache_min_ttl = int(self.cache_min_ttl_var.get())
-        except (TypeError, ValueError): cache_min_ttl = 60
-        try: cache_neg_ttl = int(self.cache_neg_ttl_var.get())
-        except (TypeError, ValueError): cache_neg_ttl = 60
+        cache_size = self._coerce_int(self.cache_size_var.get(), CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX)
+        cache_min_ttl = self._coerce_int(self.cache_min_ttl_var.get(), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
+        cache_neg_ttl = self._coerce_int(self.cache_neg_ttl_var.get(), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
 
         config_lines = [
             '# Auto-generated by DNSCrypt Client GUI', 
@@ -1574,6 +1667,19 @@ if __name__ == "__main__":
             LOG.error("Elevation request failed", exc_info=True)
         sys.exit(0)
     
+    _instance_lock = acquire_single_instance_lock()
+    if _instance_lock is None:
+        LOG.warning("Another instance is already running - exiting.")
+        try:
+            warn_root = tk.Tk(); warn_root.withdraw()
+            messagebox.showinfo(
+                "Already Running",
+                "DNSCrypt Proxy GUI is already running.\n\nCheck the system tray.")
+            warn_root.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
+
     app_root = tk.Tk()
     gui = DNSCryptClientGUI(app_root)
     app_root.mainloop()
