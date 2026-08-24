@@ -1,4 +1,4 @@
-name: Auto-Build Executables
+﻿name: Auto-Build Executables
 
 on:
   release:
@@ -21,6 +21,7 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     permissions:
       contents: read
     strategy:
@@ -117,6 +118,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
