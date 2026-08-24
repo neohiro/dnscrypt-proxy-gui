@@ -154,8 +154,13 @@ def acquire_single_instance_lock():
     system = platform.system()
     if system == "Windows":
         import ctypes
-        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\" + APP_NAME)
-        if mutex and ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # GetLastError must be captured through ctypes' own machinery: a
+        # plain windll call can be preceded by other ctypes invocations
+        # that clobber the thread's last-error value.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ERROR_ALREADY_EXISTS = 183
+        mutex = kernel32.CreateMutexW(None, False, "Global\\" + APP_NAME)
+        if mutex and ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
             return None
         return ("mutex", mutex)
     lock_path = os.path.join(tempfile.gettempdir(), f"{APP_NAME}.instance.lock")
@@ -492,14 +497,18 @@ class DNSCryptClientGUI:
     def restore_dns_backup(self):
         """Restore the exact pre-GUI DNS configuration.
 
-        Returns True when a backup existed and was applied. When no backup
-        exists this deliberately does nothing - it must never guess."""
+        Returns True when a backup existed and was fully applied. When no
+        backup exists this deliberately does nothing - it must never guess.
+        On PARTIAL failure the backup file is kept so Restore DNS can be
+        retried; callers must not fall back to reset-to-DHCP in that case
+        (see _revert_after_restore_attempt)."""
         try:
             with open(self.dns_backup_file, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
         except FileNotFoundError:
             return False
         except Exception:
+            LOG.warning("Corrupt DNS backup at %s", self.dns_backup_file, exc_info=True)
             return False  # corrupt backup: caller decides on fallback policy
         system = platform.system()
         if payload.get("platform") != system:
@@ -512,6 +521,12 @@ class DNSCryptClientGUI:
             failures = self._restore_dns_linux(payload)
         else:
             failures = []
+        if failures:
+            LOG.warning(
+                "DNS restore incomplete for: %s - keeping %s for retry",
+                ", ".join(failures), self.dns_backup_file,
+            )
+            return False
         try:
             os.remove(self.dns_backup_file)
         except OSError:
@@ -959,10 +974,30 @@ class DNSCryptClientGUI:
             if self.tray_icon: self.tray_icon.stop()
         self._post_ui(self.root.destroy)
 
-    def get_startup_path_and_command(self):
-        script_path = os.path.abspath(sys.argv[0])
-        command = f'"{sys.executable}" "{script_path}"'
-        return script_path, command
+    @staticmethod
+    def _xml_escape(text):
+        return (text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+
+    @staticmethod
+    def _desktop_quote(token):
+        """Quote a token for a .desktop Exec= line.
+
+        Inside double quotes the spec only treats \\" and \\\\ specially;
+        %% escapes what would otherwise parse as a field code."""
+        escaped = token.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+        return f'"{escaped}"'
+
+    def get_startup_tokens(self):
+        """Argument tokens that relaunch this app for autostart entries.
+
+        Frozen builds must launch the executable itself - registering it
+        twice ('exe exe') used to work by accident but is wrong; script
+        runs need the interpreter plus the script path."""
+        if getattr(sys, "frozen", False):
+            return [sys.executable]
+        return [sys.executable, os.path.abspath(sys.argv[0])]
 
     def toggle_startup(self):
         if self.startup_var.get(): self.add_to_startup()
@@ -970,9 +1005,9 @@ class DNSCryptClientGUI:
 
     def add_to_startup(self):
         system = platform.system()
-        _, command = self.get_startup_path_and_command()
         try:
             if system == "Windows":
+                command = " ".join(f'"{t}"' for t in self.get_startup_tokens())
                 key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
                     winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, command)
@@ -980,15 +1015,19 @@ class DNSCryptClientGUI:
                 autostart_path = os.path.expanduser("~/.config/autostart")
                 os.makedirs(autostart_path, exist_ok=True)
                 desktop_file_path = os.path.join(autostart_path, f"{APP_NAME}.desktop")
+                exec_line = " ".join(self._desktop_quote(t) for t in self.get_startup_tokens())
                 with open(desktop_file_path, "w") as f:
-                    f.write(f"[Desktop Entry]\nType=Application\nExec={command}\nX-GNOME-Autostart-enabled=true\nName={APP_NAME}\n")
+                    f.write(f"[Desktop Entry]\nType=Application\nExec={exec_line}\nX-GNOME-Autostart-enabled=true\nName={APP_NAME}\n")
             elif system == "Darwin":
                 agent_path = os.path.expanduser(f"~/Library/LaunchAgents/com.{APP_NAME}.plist")
+                args_xml = "".join(
+                    f"<string>{self._xml_escape(t)}</string>" for t in self.get_startup_tokens()
+                )
                 plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.{APP_NAME}</string>
-<key>ProgramArguments</key><array><string>{sys.executable}</string><string>{os.path.abspath(sys.argv[0])}</string></array>
+<key>ProgramArguments</key><array>{args_xml}</array>
 <key>RunAtLoad</key><true/>
 </dict></plist>"""
                 with open(agent_path, "w") as f: f.write(plist_content)
@@ -1118,14 +1157,20 @@ class DNSCryptClientGUI:
     def update_config_and_restart_proxy(self, event=None):
         self.save_settings()
         if self.active_server_info:
-            if not self.action_lock.acquire(blocking=False): return
             def task():
+                # Acquire and release on the same thread; a busy lock is
+                # reported instead of silently dropping the change.
+                if not self.action_lock.acquire(blocking=False):
+                    self.root.after(0, lambda: self.status_var.set(
+                        "Busy - configuration change will need to be re-applied."))
+                    return
                 try:
                     self.root.after(0, lambda: self.status_var.set("Configuration changed. Restarting proxy..."))
                     current_servers = self.active_server_info
                     self.deactivate_dns()
                     if not self.active_server_info: self.activate_dns(current_servers)
-                finally: self.action_lock.release()
+                finally:
+                    self.action_lock.release()
             threading.Thread(target=task, daemon=True).start()
 
     def open_bridge_selector(self):
@@ -1447,8 +1492,7 @@ class DNSCryptClientGUI:
             # Parent is gone - clean up before exiting ourselves.
             try:
                 if self.active_server_info:
-                    if not self.restore_dns_backup():
-                        self.revert_system_dns()
+                    self._revert_after_restore_attempt()
             except Exception:
                 pass
             _stop_proxy()
@@ -1536,7 +1580,7 @@ class DNSCryptClientGUI:
 
         if not success:
              update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
-             self.restore_dns_backup()
+             self._revert_after_restore_attempt()
              self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
              return
         
@@ -1565,8 +1609,7 @@ class DNSCryptClientGUI:
 
         # Exact restoration of the user's previous DNS configuration; the
         # reset-to-DHCP path is only a last resort when no backup exists.
-        if not self.restore_dns_backup():
-            self.revert_system_dns()
+        self._revert_after_restore_attempt()
         
         def final_ui_reset():
             self.active_server_info = []
@@ -1616,8 +1659,16 @@ class DNSCryptClientGUI:
         self.is_exiting = True
         if self.active_server_info:
             self.stop_proxy_only()
-            if not self.restore_dns_backup():
-                self.revert_system_dns()
+            self._revert_after_restore_attempt()
+
+    def _revert_after_restore_attempt(self):
+        """Restore the exact backup; reset-to-DHCP only as a true last resort.
+
+        A PARTIAL restore keeps dns_backup.json on disk for a manual retry,
+        so the DHCP reset must not fire in that case - it would destroy
+        whatever custom settings were about to be recovered."""
+        if not self.restore_dns_backup() and not os.path.exists(self.dns_backup_file):
+            self.revert_system_dns()
 
     def start_fetch(self):
         threading.Thread(target=self._prepare_and_fetch, daemon=True).start()
