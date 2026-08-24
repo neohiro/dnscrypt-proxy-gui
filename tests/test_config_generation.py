@@ -1,0 +1,122 @@
+"""Tests for dnscrypt-proxy.toml generation and sanitisation logic."""
+import tomllib
+
+import pytest
+
+
+class TestCleanServerName:
+    def test_strips_invalid_characters(self, gui):
+        assert gui._clean_server_name("my server.example!") == "myserverexample"
+
+    def test_all_invalid_falls_back(self, gui):
+        assert gui._clean_server_name("---") == "server"
+
+    def test_unicode_stripped(self, gui):
+        assert gui._clean_server_name("sérvér") == "srvr"
+
+
+class TestConfigGeneration:
+    def test_generated_config_is_valid_toml(self, gui, sample_servers):
+        content = gui._generate_config_content(sample_servers)
+        parsed = tomllib.loads(content)
+
+    def test_listen_address(self, gui, sample_servers):
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        assert parsed["listen_addresses"] == ["127.0.0.1:53"]
+
+    def test_server_names_sanitised_and_unique(self, gui, sample_servers):
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        names = parsed["server_names"]
+        assert len(names) == len(set(names))
+        for name in names:
+            assert all(c.isalnum() or c == "_" for c in name)
+
+    def test_static_sections_cover_every_server(self, gui, sample_servers):
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        static = parsed["static"]
+        stamps = {v["stamp"] for v in static.values()}
+        for server in sample_servers:
+            assert server["stamp"] in stamps
+
+    def test_requirement_flags_propagate(self, gui, sample_servers):
+        gui.require_dnssec_var.set(True)
+        gui.require_nolog_var.set(True)
+        gui.require_nofilter_var.set(False)
+        gui.block_ipv6_var.set(True)
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        assert parsed["require_dnssec"] is True
+        assert parsed["require_nolog"] is True
+        assert parsed["require_nofilter"] is False
+        assert parsed["block_ipv6"] is True
+
+    def test_cache_values_parsed_from_strings(self, gui, sample_servers):
+        gui.cache_size_var.set("1024")
+        gui.cache_min_ttl_var.set("120")
+        gui.cache_neg_ttl_var.set("30")
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        assert parsed["cache_size"] == 1024
+        assert parsed["cache_min_ttl"] == 120
+        assert parsed["cache_neg_ttl"] == 30
+
+    def test_colliding_names_keep_distinct_stamps(self, gui):
+        servers = [
+            {"name": "srv-a", "stamp": "sdns://AAAAAAAAAAA=", "proto_type": "DNSCrypt",
+             "no-log": "✓", "dnssec": "✓", "no-filter": "✓", "description": ""},
+            {"name": "srv.a", "stamp": "sdns://BBBBBBBBBBB=", "proto_type": "DNSCrypt",
+             "no-log": "✓", "dnssec": "✓", "no-filter": "✓", "description": ""},
+        ]
+        content = gui._generate_config_content(servers)
+        parsed = tomllib.loads(content)
+        stamps = sorted(v["stamp"] for v in parsed["static"].values())
+        assert stamps == ["sdns://AAAAAAAAAAA=", "sdns://BBBBBBBBBBB="]
+        assert len(parsed["server_names"]) == 2
+
+    def test_anonymized_routes_only_for_dnscrypt(self, gui, sample_servers):
+        gui.server_relay_map = {
+            "example-a": ["relay-one"],
+            "example-b.doh": ["relay-one"],
+        }
+        gui.relay_data = [
+            {"name": "relay-one", "stamp": "sdns://AQRRRUxBWSAAAAA="},
+        ]
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        routes = parsed.get("anonymized_dns", {}).get("routes", [])
+        route_servers = {r["server_name"] for r in routes}
+        assert any(name.startswith("examplea") for name in route_servers)
+        assert not any(name.startswith("exampleb") for name in route_servers), (
+            "DoH servers must never receive anonymized-DNS routes"
+        )
+
+    def test_route_via_relays_are_defined_in_static(self, gui, sample_servers):
+        """Every relay referenced by a route must have a [static] definition,
+        otherwise dnscrypt-proxy refuses to start."""
+        gui.server_relay_map = {"example-a": ["relay-one"]}
+        gui.relay_data = [
+            {"name": "relay-one", "stamp": "sdns://AQRRRUxBWSAAAAA="},
+        ]
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        routes = parsed.get("anonymized_dns", {}).get("routes", [])
+        assert routes, "expected at least one anonymized route"
+        static_keys = set(parsed["static"].keys())
+        for route in routes:
+            for via in route["via"]:
+                assert via in static_keys, (
+                    f"route references relay '{via}' with no [static] section"
+                )
+
+
+class TestStaleRelayRegression:
+    @pytest.mark.xfail(
+        reason="stale-relay validation not implemented yet (Fix 7)", strict=True
+    )
+    def test_unknown_relay_is_dropped_not_emitted(self, gui, sample_servers):
+        """If a mapped relay vanished from the upstream list the generated
+        config must still be internally consistent (route <-> static)."""
+        gui.server_relay_map = {"example-a": ["vanished-relay"]}
+        gui.relay_data = []  # relay no longer exists upstream
+        parsed = tomllib.loads(gui._generate_config_content(sample_servers))
+        routes = parsed.get("anonymized_dns", {}).get("routes", [])
+        static_keys = set(parsed["static"].keys())
+        for route in routes:
+            for via in route["via"]:
+                assert via in static_keys, f"dangling relay '{via}'"
