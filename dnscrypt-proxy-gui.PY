@@ -577,17 +577,27 @@ class DNSCryptClientGUI:
             local_candidate = os.path.join(self.base_path, exe_name)
             candidate = local_candidate if os.path.exists(local_candidate) else exe_name
         self.proxy_executable = candidate
-        found = os.path.isfile(candidate) or bool(shutil.which(candidate))
-        if found:
+        if self._proxy_available():
             self.activate_button.config(state=tk.NORMAL)
         else:
             messagebox.showwarning(
                 "Executable Not Found",
                 f"'{candidate}' was not found.\n\n"
                 "Place dnscrypt-proxy next to the GUI, install it on your PATH, "
-                "or set the exact location on the Configuration tab."
+                "or set the exact location on the Configuration tab.",
+                parent=self.root,
             )
             self.activate_button.config(state=tk.DISABLED)
+
+    def _proxy_available(self):
+        """True when the configured proxy can actually be launched.
+
+        The candidate may be a bare name that only resolves via PATH, so a
+        plain os.path.exists() check is not sufficient here."""
+        candidate = getattr(self, 'proxy_executable', '')
+        return bool(candidate) and (
+            os.path.isfile(candidate) or shutil.which(candidate) is not None
+        )
 
     def setup_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -896,10 +906,13 @@ class DNSCryptClientGUI:
                 try:
                     fn()
                 except Exception:
-                    pass
+                    LOG.debug("UI-queue callback failed", exc_info=True)
         except queue.Empty:
             pass
-        self.root.after(100, self._drain_ui_queue)
+        try:
+            self.root.after(100, self._drain_ui_queue)
+        except tk.TclError:
+            pass  # window destroyed - the loop dies with it
 
     def hide_window(self):
         if not TRAY_AVAILABLE:
@@ -1085,7 +1098,12 @@ class DNSCryptClientGUI:
             threading.Thread(target=self._activation_worker, args=(server_list,), daemon=True).start()
 
     def _activation_worker(self, server_list):
-        if not self.action_lock.acquire(blocking=False): return
+        if not self.action_lock.acquire(blocking=False):
+            # Never silently swallow a click: another operation (startup
+            # restore, config restart) is still in flight.
+            self.root.after(0, lambda: self.status_var.set(
+                "Busy - the current operation has not finished yet."))
+            return
         try:
             if self.active_server_info:
                 self.deactivate_dns()
@@ -1379,6 +1397,11 @@ class DNSCryptClientGUI:
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 
             kernel32 = ctypes.windll.kernel32
+            # A previous activation's job is empty by now (its proxy was
+            # terminated) - close it so repeated restarts cannot leak handles.
+            if self._proxy_job_handle:
+                kernel32.CloseHandle(self._proxy_job_handle)
+                self._proxy_job_handle = None
             hjob = kernel32.CreateJobObjectW(None, None)
             if not hjob:
                 return
@@ -1399,7 +1422,7 @@ class DNSCryptClientGUI:
             else:
                 kernel32.CloseHandle(hjob)
         except Exception:
-            pass  # best-effort hardening only
+            LOG.debug("Job Object assignment failed", exc_info=True)
 
     def _posix_parent_watchdog(self, parent_pid):
         def _stop_proxy():
@@ -1630,21 +1653,22 @@ class DNSCryptClientGUI:
             session.headers.update({'User-Agent': f'{APP_NAME}/{APP_VERSION}'})
 
             # Conditional GETs: unchanged upstream lists return 304 and cost
-            # almost nothing, which makes "Refresh" cheap for everyone.
-            def conditional_get(url):
+            # almost nothing, which makes "Refresh" cheap for everyone. The
+            # condition is per-URL: only skip when THAT list is cached.
+            def conditional_get(url, has_cache):
                 headers = {}
-                if self.server_data and self.fetch_etags.get(url):
+                if has_cache and self.fetch_etags.get(url):
                     headers['If-None-Match'] = self.fetch_etags[url]
                 return session.get(url, timeout=15, headers=headers)
 
-            resp_res = conditional_get(RESOLVERS_URL)
+            resp_res = conditional_get(RESOLVERS_URL, bool(self.server_data))
             if resp_res.status_code == 200:
                 self.server_data = self._parse_markdown_list(resp_res.text)
                 self.fetch_etags[RESOLVERS_URL] = resp_res.headers.get('ETag')
             elif resp_res.status_code != 304:
                 resp_res.raise_for_status()
 
-            resp_rel = conditional_get(RELAYS_URL)
+            resp_rel = conditional_get(RELAYS_URL, bool(self.relay_data))
             if resp_rel.status_code == 200:
                 self.relay_data = self._parse_markdown_list(resp_rel.text)
                 self.fetch_etags[RELAYS_URL] = resp_rel.headers.get('ETag')
@@ -1696,8 +1720,15 @@ class DNSCryptClientGUI:
         
     def check_auto_activation(self):
         if not self.preferred_servers: return
-        self.tree.selection_set([s['name'] for s in self.server_data if s["name"] in self.preferred_servers])
-        servers_to_activate = [s for s in self.server_data if s["name"] in self.preferred_servers]
+        servers_to_activate = [
+            s for s in self.server_data if s["name"] in self.preferred_servers
+        ]
+        # Only select rows that are actually visible in the tree; the
+        # protocol filter may hide some of the preferred servers.
+        existing_rows = set(self.tree.get_children(''))
+        wanted = [s["name"] for s in servers_to_activate if s["name"] in existing_rows]
+        if wanted:
+            self.tree.selection_set(wanted)
         if servers_to_activate:
             self.status_var.set(f"Automatically reactivating {len(servers_to_activate)} servers...")
             threading.Thread(target=lambda: self._activation_worker_direct(servers_to_activate), daemon=True).start()
@@ -1711,7 +1742,7 @@ class DNSCryptClientGUI:
     def on_server_select(self, event):
         selected_items = self.tree.selection()
         if not self.active_server_info:
-            self.activate_button.config(state=tk.NORMAL if (selected_items and os.path.exists(self.proxy_executable)) else tk.DISABLED)
+            self.activate_button.config(state=tk.NORMAL if (selected_items and self._proxy_available()) else tk.DISABLED)
         
         can_bridge = bool(selected_items) and all(
             (self._server_by_name.get(name) or {}).get('proto_type') == "DNSCrypt"
