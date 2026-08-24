@@ -117,7 +117,12 @@ class DNSCryptClientGUI:
 
         self.settings = self.load_settings() 
         
-        self.preferred_servers = self.settings.get("last_active_servers", [])
+        # Only auto-reactivate when the proxy was actually running at last
+        # shutdown; an explicit Deactivate must stick across restarts.
+        if self.settings.get("was_active", False):
+            self.preferred_servers = self.settings.get("last_active_servers", [])
+        else:
+            self.preferred_servers = []
         
         self.protocol_filter_var.set(self.settings.get("ui_filter_protocol", "All Protocols"))
         self.start_minimized_var.set(self.settings.get("ui_start_minimized", False))
@@ -605,8 +610,6 @@ class DNSCryptClientGUI:
             return
         
         servers_to_save = [s['name'] for s in self.active_server_info]
-        if not servers_to_save:
-             servers_to_save = self.preferred_servers
 
         settings_to_save = {
             "was_active": bool(self.active_server_info),
