@@ -1006,6 +1006,24 @@ class DNSCryptClientGUI:
             '# --- Static ---'
         ]
         
+        known_relay_stamps = {}
+        for r in self.relay_data:
+            known_relay_stamps.setdefault(r["name"], r["stamp"])
+
+        relay_safe_names = {}   # original relay name -> unique safe TOML name
+
+        def _unique_relay_safe(original):
+            if original in relay_safe_names:
+                return relay_safe_names[original]
+            base = self._clean_server_name(original)
+            candidate, counter = base, 1
+            taken = set(relay_safe_names.values()) | set(safe_server_names)
+            while candidate in taken:
+                candidate = f"{base}_{counter}"
+                counter += 1
+            relay_safe_names[original] = candidate
+            return candidate
+
         used_relays = set()
         anonymized_routes = []
         
@@ -1017,20 +1035,26 @@ class DNSCryptClientGUI:
             if isinstance(relay_list, str): relay_list = [relay_list] if relay_list else []
             
             if relay_list and server_info['stamp'].startswith("sdns://AQ"):
+                # Drop mappings whose relay has vanished from the upstream
+                # list - emitting a route without a matching [static] stamp
+                # would make dnscrypt-proxy exit immediately.
+                valid_relays = [r for r in relay_list if r in known_relay_stamps]
+                if not valid_relays: continue
                 safe_relays = []
-                for r_name in relay_list:
-                    r_clean = self._clean_server_name(r_name)
-                    safe_relays.append(r_clean)
-                    used_relays.add((r_name, r_clean)) 
+                for r_name in valid_relays:
+                    safe_relays.append(_unique_relay_safe(r_name))
+                    used_relays.add(r_name)
                 
                 anonymized_routes.append(f"{{ server_name = '{safe_name}', via = {json.dumps(safe_relays)} }}")
 
         if used_relays:
             config_lines.append('\n# --- Relays ---')
-            for original_name, safe_relay_name in used_relays:
-                relay_info = next((r for r in self.relay_data if r["name"] == original_name), None)
-                if relay_info: 
-                    config_lines.extend([f"\n[static.'{safe_relay_name}']", f"stamp = '{relay_info['stamp']}'"])
+            for original_name in used_relays:
+                safe_relay_name = relay_safe_names[original_name]
+                config_lines.extend([
+                    f"\n[static.'{safe_relay_name}']",
+                    f"stamp = '{known_relay_stamps[original_name]}'"
+                ])
 
         if anonymized_routes:
             config_lines.append('\n[anonymized_dns]')

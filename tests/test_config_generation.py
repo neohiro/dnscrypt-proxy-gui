@@ -106,9 +106,6 @@ class TestConfigGeneration:
 
 
 class TestStaleRelayRegression:
-    @pytest.mark.xfail(
-        reason="stale-relay validation not implemented yet (Fix 7)", strict=True
-    )
     def test_unknown_relay_is_dropped_not_emitted(self, gui, sample_servers):
         """If a mapped relay vanished from the upstream list the generated
         config must still be internally consistent (route <-> static)."""
