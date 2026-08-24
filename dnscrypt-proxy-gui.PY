@@ -1271,12 +1271,12 @@ class DNSCryptClientGUI:
             config_dir = self.config_dir_var.get().strip() or self.base_path
             try:
                 os.makedirs(config_dir, exist_ok=True)
-            except PermissionError:
+            except PermissionError as perm_err:
                 raise Exception(
                     f"No permission to write the configuration folder:\n{config_dir}\n\n"
                     "On Linux/macOS run the GUI with sudo, or pick a writable folder "
                     "on the Configuration tab."
-                )
+                ) from perm_err
             config_path = os.path.join(config_dir, CONFIG_FILE)
             with open(config_path, "w", encoding='utf-8') as f: f.write(self._generate_config_content(server_list))
             
@@ -1333,11 +1333,11 @@ class DNSCryptClientGUI:
             return
 
         success = False
-        for attempt in range(5):
+        for _ in range(5):
              if self.set_system_dns("127.0.0.1"):
                  success = True
                  break
-             time.sleep(1) 
+             time.sleep(1)
 
         if not success:
              update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
