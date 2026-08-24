@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 # import requests # Moved to local scope for faster startup
 import threading
+import collections
 import os
 import sys
 import subprocess
@@ -75,6 +76,8 @@ class DNSCryptClientGUI:
         self.server_relay_map = {} 
         self.active_server_info = []
         self.proxy_process = None
+        self.proxy_log_tail = collections.deque(maxlen=40)
+        self._proxy_log_thread = None
         
         self.action_lock = threading.Lock() 
         self.tray_icon = None 
@@ -778,6 +781,31 @@ class DNSCryptClientGUI:
             
         return "\n".join(config_lines)
 
+    def _start_proxy_log_drain(self):
+        """Drain the proxy's stderr in a background thread.
+
+        Without this the OS pipe buffer can fill up on a chatty proxy and
+        block it mid-run; the last lines are kept for diagnostics."""
+        proc = self.proxy_process
+
+        def drain():
+            try:
+                for line in iter(proc.stderr.readline, ""):
+                    if line:
+                        self.proxy_log_tail.append(line.rstrip())
+            except Exception:
+                pass
+            finally:
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+
+        self._proxy_log_thread = threading.Thread(
+            target=drain, daemon=True, name="proxy-log-drain"
+        )
+        self._proxy_log_thread.start()
+
     def activate_dns(self, server_list):
         def update_ui(key, value):
             self.root.after(0, lambda: self.status_var.set(value) if key == 'status' else None)
@@ -801,15 +829,20 @@ class DNSCryptClientGUI:
             
             popen_args = self._get_hidden_subprocess_args()
             if 'stdin' in popen_args: del popen_args['stdin']
-            
+
+            # stdout is discarded; stderr is drained by a daemon thread so the
+            # OS pipe buffer can never fill up and stall the proxy, while the
+            # tail is retained for diagnostics if the process dies.
+            self.proxy_log_tail.clear()
             self.proxy_process = subprocess.Popen(
-                [self.proxy_executable, "-config", config_path], 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
+                [self.proxy_executable, "-config", config_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
                 **popen_args
             )
-            
+            self._start_proxy_log_drain()
+
             start_time = time.time()
             is_alive = True
             while time.time() - start_time < 2.5:
@@ -819,9 +852,9 @@ class DNSCryptClientGUI:
                 time.sleep(0.1)
 
             if not is_alive:
-                _, err = self.proxy_process.communicate()
-                # FIX: err is already str because text=True
-                err_msg = err if err else "Unknown error"
+                if self._proxy_log_thread:
+                    self._proxy_log_thread.join(timeout=1.0)
+                err_msg = "\n".join(self.proxy_log_tail) or "Unknown error"
                 raise Exception(f"Process exited immediately.\nLog:\n{err_msg}")
                 
         except Exception as e:
