@@ -916,6 +916,7 @@ class DNSCryptClientGUI:
 
         selector_window = tk.Toplevel(self.root)
         selector_window.title("Select Bridge (Relay)"); selector_window.geometry("500x600")
+        selector_window.transient(self.root)
         ttk.Label(selector_window, text=f"Assigning bridge(s) to {len(selected_items)} server(s)", style="Header.TLabel").pack(pady=10)
         
         search_frame = ttk.Frame(selector_window); search_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -943,8 +944,11 @@ class DNSCryptClientGUI:
             if not selection_indices: return
             selected_relays = [relay_listbox.get(i) for i in selection_indices]
             final_relays = [] if "(Direct Connection - No Bridge)" in selected_relays else selected_relays
-            
+
+            existing_rows = set(self.tree.get_children(''))
             for server_name in selected_items:
+                if server_name not in existing_rows:
+                    continue  # row disappeared (list refreshed) - skip safely
                 if not final_relays:
                     if server_name in self.server_relay_map: del self.server_relay_map[server_name]
                     self.tree.set(server_name, "via", "")
@@ -959,6 +963,12 @@ class DNSCryptClientGUI:
         btn_frame = ttk.Frame(selector_window, padding=10); btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
         ttk.Button(btn_frame, text="Cancel", command=selector_window.destroy).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Apply Bridge(s)", command=confirm_selection).pack(side=tk.RIGHT)
+
+        # Make the dialog modal: the underlying tree can otherwise be
+        # re-filtered while the selector is open, invalidating its rows.
+        selector_window.update_idletasks()
+        selector_window.grab_set()
+        selector_window.focus_set()
 
     def _clean_server_name(self, name):
         clean = re.sub(r'[^a-zA-Z0-9_]', '', name)
