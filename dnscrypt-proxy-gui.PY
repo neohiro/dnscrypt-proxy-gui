@@ -25,7 +25,10 @@ try:
     from pystray import MenuItem as item, Icon as icon
     from PIL import Image
     TRAY_AVAILABLE = True
-except ImportError:
+except Exception:
+    # pystray's X11 backend opens the display at import time and can raise
+    # non-ImportError errors on headless or Wayland-only systems; falling
+    # back to the no-tray path must never crash the app itself.
     TRAY_AVAILABLE = False
 
 if platform.system() == "Windows":
