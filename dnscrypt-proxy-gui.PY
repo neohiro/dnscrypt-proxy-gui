@@ -558,28 +558,6 @@ class DNSCryptClientGUI:
                     pass
         self.proxy_process = None
 
-    def manual_restore_dns(self):
-        """Safety hatch: put the system DNS back the way the user had it."""
-        if not self.action_lock.acquire(blocking=False):
-            self.status_var.set("Busy - please wait for the current operation to finish.")
-            return
-        self.action_lock.release()
-        threading.Thread(target=self._manual_restore_worker, daemon=True).start()
-
-    def _manual_restore_worker(self):
-        with self.action_lock:
-            if self.active_server_info:
-                self.deactivate_dns()
-                return
-            if os.path.exists(self.dns_backup_file):
-                restored = self.restore_dns_backup()
-                message = ("System DNS restored to your previous settings."
-                           if restored else
-                           "Restore failed - see log for details.")
-            else:
-                message = "No saved DNS state to restore (nothing was changed)."
-            self._post_ui(lambda m=message: self.status_var.set(m))
-
     def load_app_icon(self):
         potential_paths = []
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -645,14 +623,6 @@ class DNSCryptClientGUI:
 
         self.status_indicator = ttk.Label(activation_frame, text="STATUS: INACTIVE", style="Inactive.TLabel")
         self.status_indicator.pack(side=tk.LEFT, padx=10)
-
-        self.restore_dns_button = ttk.Button(activation_frame, text="Restore DNS", command=self.manual_restore_dns)
-        self.restore_dns_button.pack(side=tk.LEFT, padx=(0, 10))
-        self._attach_status_hint(
-            self.restore_dns_button,
-            "While active: stops the proxy and puts your previous DNS back "
-            "(same as Deactivate). While idle: repairs leftover DNS changes "
-            "from a crashed session.")
 
         self.active_server_label = ttk.Label(activation_frame, text="No server active.")
         self.active_server_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=10)
@@ -806,22 +776,7 @@ class DNSCryptClientGUI:
                                                text="Check for update",
                                                command=self.manual_update_check)
         self.check_updates_button.pack(side=tk.RIGHT)
-    
-    def _attach_status_hint(self, widget, text):
-        """Show a hint in the status bar while the pointer is over widget."""
-        hint_state = {"previous": None}
 
-        def _enter(_event):
-            hint_state["previous"] = self.status_var.get()
-            self.status_var.set(text)
-
-        def _leave(_event):
-            if hint_state["previous"] is not None:
-                self.status_var.set(hint_state["previous"])
-                hint_state["previous"] = None
-
-        widget.bind("<Enter>", _enter)
-        widget.bind("<Leave>", _leave)
     def _browse_path(self, target_var, kind):
         if kind == "file":
             chosen = filedialog.askopenfilename(
