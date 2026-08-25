@@ -36,7 +36,7 @@ if platform.system() == "Windows":
 
 # --- Constants ---
 APP_NAME = "DNSCryptClientGUI"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # dnscrypt-proxy cache tunables. Note: cache_size counts ENTRIES, not bytes.
 CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX = 512, 64, 1 << 20
