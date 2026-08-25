@@ -41,6 +41,9 @@ APP_VERSION = "1.1.0"
 # dnscrypt-proxy cache tunables. Note: cache_size counts ENTRIES, not bytes.
 CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX = 512, 64, 1 << 20
 CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX = 60, 0, 7 * 24 * 3600
+
+LATEST_RELEASE_API = "https://api.github.com/repos/neohiro/dnscrypt-proxy-gui/releases/latest"
+RELEASES_PAGE = "https://github.com/neohiro/dnscrypt-proxy-gui/releases/latest"
 RESOLVERS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
 RELAYS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md"
 CONFIG_FILE = "dnscrypt-proxy.toml"
@@ -308,7 +311,12 @@ class DNSCryptClientGUI:
         # main thread. Handlers enqueue closures that the main loop drains.
         self._ui_queue = queue.Queue()
         self.root.after(100, self._drain_ui_queue)
-        
+
+        # Silent update probe at startup: failures never surface, an
+        # available update quietly lights up the Configuration tab row.
+        threading.Thread(target=lambda: self._update_check_worker(False),
+                         daemon=True, name="update-check").start()
+
         self.check_proxy_executable()
         self.check_startup_status()
 
@@ -570,7 +578,7 @@ class DNSCryptClientGUI:
                            "Restore failed - see log for details.")
             else:
                 message = "No saved DNS state to restore (nothing was changed)."
-            self.root.after(0, lambda m=message: self.status_var.set(m))
+            self._post_ui(lambda m=message: self.status_var.set(m))
 
     def load_app_icon(self):
         potential_paths = []
@@ -640,6 +648,11 @@ class DNSCryptClientGUI:
 
         self.restore_dns_button = ttk.Button(activation_frame, text="Restore DNS", command=self.manual_restore_dns)
         self.restore_dns_button.pack(side=tk.LEFT, padx=(0, 10))
+        self._attach_status_hint(
+            self.restore_dns_button,
+            "While active: stops the proxy and puts your previous DNS back "
+            "(same as Deactivate). While idle: repairs leftover DNS changes "
+            "from a crashed session.")
 
         self.active_server_label = ttk.Label(activation_frame, text="No server active.")
         self.active_server_label.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=10)
@@ -680,17 +693,7 @@ class DNSCryptClientGUI:
         # dark system themes instead of hard-coding light colors.
         theme_bg = self.style.lookup('Treeview', 'background') or '#ffffff'
 
-        def _luminance(color):
-            color = str(color).lstrip('#')
-            if len(color) == 3:
-                color = ''.join(c * 2 for c in color)
-            try:
-                r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
-            except ValueError:
-                return 1.0
-            return (0.299 * r + 0.587 * g + 0.114 * b) / 255
-
-        if _luminance(theme_bg) >= 0.5:
+        if self._luminance(theme_bg) >= 0.5:
             odd_bg, even_bg = '#f0f0f0', 'white'
         else:
             odd_bg, even_bg = '#2a2d32', '#1e2126'
@@ -788,8 +791,37 @@ class DNSCryptClientGUI:
         neg_ttl_entry.bind("<FocusOut>", lambda e: self._validated_cache_apply(
             self.cache_neg_ttl_var, CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX, "Cache negative TTL"))
 
-        ttk.Label(parent, text="Changes are applied immediately if the service is active.", style="Status.TLabel").pack(pady=20)
+        ttk.Label(parent, text="Changes are applied immediately if the service is active.", style="Status.TLabel").pack(pady=(14, 4))
+
+        # Version row - deliberately the last thing on the tab and quiet.
+        update_frame = ttk.Frame(parent)
+        update_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 2))
+        self._update_url = None
+        self.update_status_label = ttk.Label(update_frame,
+                                             text=f"Version {APP_VERSION}",
+                                             style="Status.TLabel")
+        self.update_status_label.pack(side=tk.LEFT)
+        self.update_status_label.bind("<Button-1>", self._open_update_link)
+        self.check_updates_button = ttk.Button(update_frame, width=18,
+                                               text="Check for update",
+                                               command=self.manual_update_check)
+        self.check_updates_button.pack(side=tk.RIGHT)
     
+    def _attach_status_hint(self, widget, text):
+        """Show a hint in the status bar while the pointer is over widget."""
+        hint_state = {"previous": None}
+
+        def _enter(_event):
+            hint_state["previous"] = self.status_var.get()
+            self.status_var.set(text)
+
+        def _leave(_event):
+            if hint_state["previous"] is not None:
+                self.status_var.set(hint_state["previous"])
+                hint_state["previous"] = None
+
+        widget.bind("<Enter>", _enter)
+        widget.bind("<Leave>", _leave)
     def _browse_path(self, target_var, kind):
         if kind == "file":
             chosen = filedialog.askopenfilename(
@@ -1154,6 +1186,19 @@ class DNSCryptClientGUI:
         self.apply_current_sorts()
 
     @staticmethod
+    def _luminance(color):
+        """Perceived luminance (0..1) of a #rgb / #rrggbb color; 1.0 when
+        unparseable so callers default to light-theme assumptions."""
+        color = str(color).lstrip('#')
+        if len(color) == 3:
+            color = ''.join(c * 2 for c in color)
+        try:
+            r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return 1.0
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+    @staticmethod
     def _tree_values(server, relays_display):
         """Row tuple for the server table.
 
@@ -1165,6 +1210,135 @@ class DNSCryptClientGUI:
                 server.get("no-log", "\u2717"),
                 server.get("dnssec", "\u2717"),
                 server.get("no-filter", "\u2717"))
+
+    # ------------------------------------------------------------------
+    # Update check (semver-aware, unobtrusive)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_semver(tag):
+        """Parse 'vX.Y.Z' into an (int, int, int) tuple; None if malformed.
+
+        Pre-release/build suffixes ('-beta.1', '+build') are stripped: the
+        project ships only final releases, so base triples decide ordering.
+        Leading zeros are tolerated and normalised by int()."""
+        if not isinstance(tag, str):
+            return None
+        base = tag.strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+        parts = base.split(".")
+        if len(parts) != 3:
+            return None
+        try:
+            nums = tuple(int(p) for p in parts)
+        except ValueError:
+            return None
+        return nums
+
+    @staticmethod
+    def _evaluate_update(tag, current=APP_VERSION):
+        """Classify the latest remote tag against the running version.
+
+        Returns (kind, display, url) where kind is one of
+        'available' | 'current' | 'invalid'."""
+        candidate = DNSCryptClientGUI._parse_semver(tag)
+        running = DNSCryptClientGUI._parse_semver(current)
+        if not tag or not candidate or not running:
+            return ("invalid", "", RELEASES_PAGE)
+        if candidate > running:
+            display = "v{}.{}.{}".format(*candidate)
+            return ("available", display, RELEASES_PAGE)
+        return ("current", f"v{running[0]}.{running[1]}.{running[2]}", "")
+
+    def _fetch_latest_release(self):
+        """Query GitHub for the latest published release.
+
+        Returns (tag, html_url), or (None, None) on any failure - callers
+        treat that as 'check failed' rather than 'up to date'."""
+        try:
+            import requests
+            resp = requests.get(
+                LATEST_RELEASE_API,
+                timeout=10,
+                headers={
+                    "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None, None
+            tag = data.get("tag_name") or ""
+            url = data.get("html_url") or RELEASES_PAGE
+            return tag, url
+        except Exception:
+            LOG.debug("Update check request failed", exc_info=True)
+            return None, None
+
+    def _update_check_worker(self, notify_on_failure):
+        # Tests set this env var so they never touch the network.
+        if os.environ.get("DNSCRYPT_GUI_SKIP_UPDATE_CHECK"):
+            return
+        tag, url = self._fetch_latest_release()
+
+        def done():
+            try:
+                self._apply_update_result(tag, url, notify_on_failure)
+            finally:
+                button = getattr(self, "check_updates_button", None)
+                if button is not None:
+                    try:
+                        button.state(["!disabled"])
+                    except tk.TclError:
+                        pass
+
+        self._post_ui(done)
+
+    def _apply_update_result(self, tag, url, notify_on_failure=False):
+        kind, display, _link = self._evaluate_update(tag)
+        label = self.update_status_label
+        if kind == "available":
+            self._update_url = url or RELEASES_PAGE
+            try:
+                theme_fg = self.style.lookup("TLabel", "foreground")
+                link_fg = "#0b7dda" if self._luminance(theme_fg) < 0.5 else "#0b5cd7"
+                if not theme_fg:
+                    link_fg = "#0b7dda"
+                label.config(text=f"Update available: {display}",
+                             foreground=link_fg, cursor="hand2")
+            except tk.TclError:
+                label.config(text=f"Update available: {display}")
+            self.status_var.set(
+                f"Update available: {display} - click the version line to open the release page.")
+        elif kind == "current":
+            self._update_url = None
+            label.config(text=f"Version {APP_VERSION} - up to date",
+                         cursor="arrow")
+            if notify_on_failure:
+                self.status_var.set(f"You are running the latest version ({APP_VERSION}).")
+        else:
+            self._update_url = None
+            label.config(text=f"Version {APP_VERSION}", cursor="arrow")
+            message = "Could not determine the latest version."
+            if notify_on_failure:
+                self.status_var.set(f"Update check failed. {message}")
+            LOG.debug("Update check inconclusive (tag=%r)", tag)
+
+    def manual_update_check(self):
+        button = getattr(self, "check_updates_button", None)
+        if button is not None:
+            button.state(["disabled"])
+        self.status_var.set("Checking for updates...")
+        threading.Thread(target=lambda: self._update_check_worker(True),
+                         daemon=True, name="update-check").start()
+
+    def _open_update_link(self, event=None):
+        if getattr(self, "_update_url", None):
+            try:
+                import webbrowser
+                webbrowser.open(self._update_url)
+            except Exception:
+                LOG.debug("Could not open update URL", exc_info=True)
 
     def toggle_activation(self):
         if self.active_server_info:
@@ -1181,7 +1355,7 @@ class DNSCryptClientGUI:
         if not self.action_lock.acquire(blocking=False):
             # Never silently swallow a click: another operation (startup
             # restore, config restart) is still in flight.
-            self.root.after(0, lambda: self.status_var.set(
+            self._post_ui(lambda: self.status_var.set(
                 "Busy - the current operation has not finished yet."))
             return
         try:
@@ -1199,11 +1373,11 @@ class DNSCryptClientGUI:
                 # Acquire and release on the same thread; a busy lock is
                 # reported instead of silently dropping the change.
                 if not self.action_lock.acquire(blocking=False):
-                    self.root.after(0, lambda: self.status_var.set(
+                    self._post_ui(lambda: self.status_var.set(
                         "Busy - configuration change will need to be re-applied."))
                     return
                 try:
-                    self.root.after(0, lambda: self.status_var.set("Configuration changed. Restarting proxy..."))
+                    self._post_ui(lambda: self.status_var.set("Configuration changed. Restarting proxy..."))
                     current_servers = self.active_server_info
                     self.deactivate_dns()
                     if not self.active_server_info: self.activate_dns(current_servers)
@@ -1301,9 +1475,53 @@ class DNSCryptClientGUI:
             self.status_var.set(f"{label} was adjusted to {value}.")
         self.update_config_and_restart_proxy()
 
-    def _generate_config_content(self, server_list):
+    def _snapshot_generation_settings(self):
+        """Read Tk-bound settings on the main thread; callable from any
+        thread. Returns plain values so worker threads never touch the Tcl
+        interpreter (which raises 'main thread is not in main loop')."""
+        done = threading.Event()
+        holder = {}
+
+        def grab():
+            try:
+                holder["value"] = {
+                    "config_dir": self.config_dir_var.get().strip(),
+                    "cache_size": self.cache_size_var.get(),
+                    "cache_min_ttl": self.cache_min_ttl_var.get(),
+                    "cache_neg_ttl": self.cache_neg_ttl_var.get(),
+                    "block_ipv6": self.block_ipv6_var.get(),
+                    "require_dnssec": self.require_dnssec_var.get(),
+                    "require_nolog": self.require_nolog_var.get(),
+                    "require_nofilter": self.require_nofilter_var.get(),
+                }
+            except Exception:
+                LOG.warning("Could not snapshot generation settings", exc_info=True)
+            finally:
+                done.set()
+
+        self._post_ui(grab)
+        done.wait(timeout=10)
+        return holder.get("value") or {}
+
+    def _generate_config_content(self, server_list, settings=None):
+        """Build the dnscrypt-proxy TOML.
+
+        ``settings`` is an optional plain dict of already-read values; when
+        omitted, the Tk variables are read directly (main-thread callers and
+        tests). Worker threads must always pass a snapshot taken via
+        _snapshot_generation_settings()."""
+        if settings is None:
+            settings = {
+                "cache_size": self.cache_size_var.get(),
+                "cache_min_ttl": self.cache_min_ttl_var.get(),
+                "cache_neg_ttl": self.cache_neg_ttl_var.get(),
+                "block_ipv6": self.block_ipv6_var.get(),
+                "require_dnssec": self.require_dnssec_var.get(),
+                "require_nolog": self.require_nolog_var.get(),
+                "require_nofilter": self.require_nofilter_var.get(),
+            }
         safe_server_names = []
-        name_map = {} 
+        name_map = {}
 
         for s in server_list:
             safe = self._clean_server_name(s['name'])
@@ -1315,28 +1533,28 @@ class DNSCryptClientGUI:
             safe_server_names.append(safe)
             name_map[safe] = s
 
-        cache_size = self._coerce_int(self.cache_size_var.get(), CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX)
-        cache_min_ttl = self._coerce_int(self.cache_min_ttl_var.get(), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
-        cache_neg_ttl = self._coerce_int(self.cache_neg_ttl_var.get(), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
+        cache_size = self._coerce_int(settings.get("cache_size"), CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX)
+        cache_min_ttl = self._coerce_int(settings.get("cache_min_ttl"), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
+        cache_neg_ttl = self._coerce_int(settings.get("cache_neg_ttl"), CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX)
 
         config_lines = [
-            '# Auto-generated by DNSCrypt Client GUI', 
+            '# Auto-generated by DNSCrypt Client GUI',
             "listen_addresses = ['127.0.0.1:53']",
-            f"server_names = {json.dumps(safe_server_names)}", 
-            '', 
+            f"server_names = {json.dumps(safe_server_names)}",
+            '',
             '# --- Global ---',
-            f'block_ipv6 = {str(self.block_ipv6_var.get()).lower()}',
-            f'require_dnssec = {str(self.require_dnssec_var.get()).lower()}',
-            f'require_nolog = {str(self.require_nolog_var.get()).lower()}',
-            f'require_nofilter = {str(self.require_nofilter_var.get()).lower()}', 
+            f'block_ipv6 = {str(bool(settings.get("block_ipv6"))).lower()}',
+            f'require_dnssec = {str(bool(settings.get("require_dnssec"))).lower()}',
+            f'require_nolog = {str(bool(settings.get("require_nolog"))).lower()}',
+            f'require_nofilter = {str(bool(settings.get("require_nofilter"))).lower()}',
             'ignore_system_dns = true',
             '',
-            '# --- Cache ---', 
-            'cache = true', 
+            '# --- Cache ---',
+            'cache = true',
             f'cache_size = {cache_size}',
-            f'cache_min_ttl = {cache_min_ttl}', 
-            f'cache_neg_ttl = {cache_neg_ttl}', 
-            '', 
+            f'cache_min_ttl = {cache_min_ttl}',
+            f'cache_neg_ttl = {cache_neg_ttl}',
+            '',
             '# --- Static ---'
         ]
         
@@ -1553,14 +1771,15 @@ class DNSCryptClientGUI:
 
     def activate_dns(self, server_list):
         def update_ui(key, value):
-            self.root.after(0, lambda: self.status_var.set(value) if key == 'status' else None)
-            if key == 'disable_button': self.root.after(0, lambda: self.activate_button.config(state=tk.DISABLED))
+            self._post_ui(lambda: self.status_var.set(value) if key == 'status' else None)
+            if key == 'disable_button': self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
 
         update_ui('status', f"Activating {len(server_list)} servers...")
         update_ui('disable_button', True)
 
         try:
-            config_dir = self.config_dir_var.get().strip() or self.base_path
+            settings = self._snapshot_generation_settings()
+            config_dir = settings.get("config_dir", "") or self.base_path
             try:
                 os.makedirs(config_dir, exist_ok=True)
             except PermissionError as perm_err:
@@ -1570,7 +1789,7 @@ class DNSCryptClientGUI:
                     "on the Configuration tab."
                 ) from perm_err
             config_path = os.path.join(config_dir, CONFIG_FILE)
-            with open(config_path, "w", encoding='utf-8') as f: f.write(self._generate_config_content(server_list))
+            with open(config_path, "w", encoding='utf-8') as f: f.write(self._generate_config_content(server_list, settings=settings))
             
             popen_args = self._get_hidden_subprocess_args()
             if 'stdin' in popen_args: del popen_args['stdin']
@@ -1606,9 +1825,9 @@ class DNSCryptClientGUI:
         except Exception as e:
             update_ui('status', "Error starting proxy.")
             err_text = str(e)
-            self.root.after(0, lambda t=err_text: messagebox.showerror("Proxy Start Error", t))
+            self._post_ui(lambda t=err_text: messagebox.showerror("Proxy Start Error", t))
             self.stop_proxy_only()
-            self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
+            self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
             return
 
         try:
@@ -1616,12 +1835,12 @@ class DNSCryptClientGUI:
         except Exception as e:
             err_text = str(e)
             update_ui('status', "Activation aborted - could not back up current DNS settings.")
-            self.root.after(0, lambda t=err_text: messagebox.showerror(
+            self._post_ui(lambda t=err_text: messagebox.showerror(
                 "DNS Backup Failed",
                 "Activation was aborted because your current system DNS settings "
                 f"could not be captured for a safe restore.\n\n{err_text}"))
             self.stop_proxy_only()
-            self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
+            self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
             return
 
         success = False
@@ -1634,7 +1853,7 @@ class DNSCryptClientGUI:
         if not success:
              update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
              self._revert_after_restore_attempt()
-             self.root.after(0, lambda: self.activate_button.config(state=tk.NORMAL))
+             self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
              return
         
         def final_success_ui():
@@ -1646,11 +1865,11 @@ class DNSCryptClientGUI:
             self.status_var.set(f"Successfully activated {len(server_list)} servers.")
             self.save_settings()
         
-        self.root.after(0, final_success_ui)
+        self._post_ui(final_success_ui)
 
     def deactivate_dns(self):
-        self.root.after(0, lambda: self.status_var.set("Deactivating..."))
-        self.root.after(0, lambda: self.activate_button.config(state=tk.DISABLED))
+        self._post_ui(lambda: self.status_var.set("Deactivating..."))
+        self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
 
         # Authoritative state flips synchronously: callers on worker threads
         # (e.g. the config-restart flow) check this flag immediately after
@@ -1676,7 +1895,7 @@ class DNSCryptClientGUI:
             self.status_var.set("Deactivated. System DNS restored.")
             self.save_settings()
 
-        self.root.after(0, final_ui_reset)
+        self._post_ui(final_ui_reset)
 
     def set_system_dns(self, dns_server):
         try:
@@ -1732,14 +1951,14 @@ class DNSCryptClientGUI:
 
     def _prepare_and_fetch(self):
         with self.action_lock:
-            self.root.after(0, lambda: self.fetch_button.config(state=tk.DISABLED))
-            self.root.after(0, lambda: self.bridge_button.config(state=tk.DISABLED))
+            self._post_ui(lambda: self.fetch_button.config(state=tk.DISABLED))
+            self._post_ui(lambda: self.bridge_button.config(state=tk.DISABLED))
             
             if not self.server_data:
-                self.root.after(0, lambda: self.activate_button.config(state=tk.DISABLED))
-                self.root.after(0, lambda: self.tree.delete(*self.tree.get_children()))
+                self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
+                self._post_ui(lambda: self.tree.delete(*self.tree.get_children()))
                 
-            self.root.after(0, lambda: self.status_var.set("Fetching server and relay lists..."))
+            self._post_ui(lambda: self.status_var.set("Fetching server and relay lists..."))
             self._fetch_and_parse_servers()
 
     def _parse_markdown_list(self, text):
@@ -1800,7 +2019,7 @@ class DNSCryptClientGUI:
                 server['properties'] = ', '.join(props); server['description'] = server['description'].replace('\n', ' ').strip()
             
             self.save_server_cache()
-            self.root.after(0, self.on_fetch_complete)
+            self._post_ui(self.on_fetch_complete)
         except Exception as e:
             err_text = str(e)
 
@@ -1817,7 +2036,7 @@ class DNSCryptClientGUI:
             # err_text is bound eagerly: exception variables are deleted when
             # the except block exits, so a plain lambda over `e` would raise
             # NameError inside the Tk callback.
-            self.root.after(0, lambda m=err_text: handle_error(m))
+            self._post_ui(lambda m=err_text: handle_error(m))
 
     def on_fetch_complete(self):
         self._server_by_name = {s["name"]: s for s in self.server_data}
@@ -1829,7 +2048,7 @@ class DNSCryptClientGUI:
         def final_ui_update():
             self.fetch_button.config(state=tk.NORMAL)
             if self.tree.selection(): self.bridge_button.config(state=tk.NORMAL)
-        self.root.after(0, final_ui_update)
+        self._post_ui(final_ui_update)
         
     def check_auto_activation(self):
         if not self.preferred_servers or self._auto_activation_started:

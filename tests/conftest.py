@@ -12,8 +12,16 @@ from importlib.machinery import SourceFileLoader
 
 import pytest
 
+# Tests must never phone home for updates.
+os.environ.setdefault("DNSCRYPT_GUI_SKIP_UPDATE_CHECK", "1")
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_PATH = os.path.join(REPO_ROOT, "dnscrypt-proxy-gui.PY")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "integration: boots the real GUI and a stub proxy process")
 
 
 def _load_module():
@@ -60,6 +68,8 @@ def make_gui():
     gui.settings = {}
     gui.tray_broken = False
     gui._auto_activation_started = False
+    import queue
+    gui._ui_queue = queue.Queue()
 
     gui.block_ipv6_var = FakeVar(False)
     gui.require_dnssec_var = FakeVar(False)
