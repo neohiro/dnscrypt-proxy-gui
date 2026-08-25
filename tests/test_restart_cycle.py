@@ -49,7 +49,7 @@ def stub_proxy(tmp_path_factory):
 
 
 @pytest.fixture
-def gui(stub_proxy, monkeypatch):
+def gui(stub_proxy, monkeypatch, tmp_path):
     # Hermetic runtime state: wipe settings.json next to the repo root if a
     # previous run left one behind.
     settings = os.path.join(os.path.dirname(os.path.dirname(
@@ -93,6 +93,9 @@ def gui(stub_proxy, monkeypatch):
     import tkinter as tk
     root = tk.Tk()
     instance = mod.DNSCryptClientGUI(root)
+    # Linux default config dir is /etc/dnscrypt-proxy (root-owned); point
+    # the test at a writable location like a configured install would.
+    instance.config_dir_var.set(str(tmp_path))
     yield instance
     proc = getattr(instance, "proxy_process", None)
     if proc is not None and proc.poll() is None:
