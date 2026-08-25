@@ -23,7 +23,7 @@ It allows you to fetch the latest public resolver lists, select one or more serv
 - **Multi-Server Activation:** Select and activate multiple servers simultaneously for enhanced reliability and speed.
 - **Anonymizing Relays:** Apply anonymizing relays to DNSCrypt servers for an extra layer of privacy.
 - **Live Status Indicator:** A clear visual indicator shows whether the service is ACTIVE or INACTIVE.
-- **Exact DNS Backup & Restore:** Before any change, your current DNS settings are captured and restored verbatim on deactivation or exit - a **Restore DNS** button is always available as a safety hatch.
+- **Exact DNS Backup & Restore:** Before any change, your current DNS settings are captured and restored verbatim on deactivation or exit. If a crashed session ever left settings behind, the next launch repairs them automatically.
 - **System Tray Integration:** Hides the main window to a tray icon, allowing the client to run unobtrusively in the background.
 - **Run at Startup:** A simple checkbox lets you configure the client to launch automatically when you log in.
 - **Comprehensive Configuration:** A dedicated tab to visually manage the `dnscrypt-proxy.toml` settings.
