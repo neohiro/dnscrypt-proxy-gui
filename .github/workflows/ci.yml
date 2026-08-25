@@ -46,8 +46,8 @@ jobs:
       - name: Lint (bug-prone constructs only)
         run: ruff check dnscrypt-proxy-gui.PY tests --select F,E722,B
 
-      - name: Unit Tests
-        run: python -m pytest tests -q
+      - name: Unit & Integration Tests (xvfb for tkinter)
+        run: xvfb-run -a python -m pytest tests -q
 
       - name: GUI Smoke Test (headless)
         run: xvfb-run -a python tests/gui_smoke.py
