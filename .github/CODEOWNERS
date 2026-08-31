@@ -1,0 +1,7 @@
+# Default owners: neohiro org + godadmin
+* @neohiro
+
+# Sensitive paths need a second pair of eyes
+/SECURITY.md @neohiro
+/CREDITS.md @neohiro
+/.github/ @neohiro

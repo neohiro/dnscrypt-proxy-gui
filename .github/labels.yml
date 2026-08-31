@@ -1,0 +1,81 @@
+- name: bug
+  color: d73a4a
+  description: Something is not working
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to documentation
+- name: good first issue
+  color: 7057ff
+  description: Good for newcomers
+- name: help wanted
+  color: 008672
+  description: Extra attention is needed
+- name: invalid
+  color: e4e669
+  description: This does not follow the issue template / does not belong
+- name: question
+  color: d876e3
+  description: Further information is requested
+- name: wontfix
+  color: ffffff
+  description: This will not be worked on
+- name: duplicate
+  color: cfd3d7
+  description: This issue or pull request already exists
+- name: security
+  color: b60205
+  description: Security-sensitive change or disclosure
+- name: dependencies
+  color: 0366d6
+  description: Pull requests that update a dependency file
+- name: ci
+  color: 0e8a16
+  description: CI / build / workflow changes
+- name: python
+  color: 3572A5
+  description: Python-specific
+- name: javascript
+  color: f1e05a
+  description: JavaScript / TypeScript-specific
+- name: go
+  color: 00ADD8
+  description: Go-specific
+- name: needs-triage
+  color: fbca04
+  description: Awaiting maintainer review
+- name: breaking-change
+  color: b60205
+  description: Breaks backward compatibility
+- name: area/heart
+  color: ff9f1c
+  description: Heart cadence engine
+- name: area/brain
+  color: 5319e7
+  description: Brain intelligence layer
+- name: area/mouth
+  color: 006b3c
+  description: Mouth output layer
+- name: area/voicemail
+  color: c5def5
+  description: Voicemail intake
+- name: area/doctor
+  color: bfdadc
+  description: Doctor self-heal
+- name: area/network
+  color: 1d76db
+  description: Networking / tailscale / DNS
+- name: area/dashboard
+  color: 0e8a16
+  description: Dashboard / UI
+- name: area/llm
+  color: 5319e7
+  description: LLM router / prompts / models
+- name: area/userdata
+  color: e99695
+  description: User data / trust / roles
+- name: area/monetization
+  color: f9d0c4
+  description: Revenue / sponsors / billing

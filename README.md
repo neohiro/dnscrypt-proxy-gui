@@ -164,8 +164,7 @@ A huge thank you to the [DNSCrypt team](https://github.com/DNSCrypt) for creatin
 ---
 
 <div align="center">
-  <a href="http://www.freevisitorcounters.com">Free Counter</a>
-  <script type="text/javascript" src="https://www.freevisitorcounters.com/en/home/counter/1631169/t/1"></script>
+  <script type="text/javascript" src="https://www.freevisitorcounters.com/en/home/counter/1631177/t/1" defer></script>
 </div>
 
 <p align="center">

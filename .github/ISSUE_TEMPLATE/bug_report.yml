@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible bug or regression
+labels: ["bug", "needs-triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in the sections
+        below so we can reproduce and fix it quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected version
+      description: "Tag, commit SHA, or container image (e.g. `v1.2.3`, `main@a1b2c3d`)"
+      placeholder: "main"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (describe in body)
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: "Minimum steps, commands, or config that triggers the bug."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: "Include stack traces, log lines, or screenshots if helpful."
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: "How severe is this? (cosmetic / annoying / blocking / data-loss / security)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: "Hardware, Python/Node version, container runtime, network setup."
+    validations:
+      required: false
