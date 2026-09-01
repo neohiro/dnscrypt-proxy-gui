@@ -1,3 +1,9 @@
+# .github/workflows/doctor.yml -- neohiro/doctor per-repo wrapper
+#
+# Smart path filtering: stages only run when relevant file types change.
+# Canonical source: neohiro/doctor/.github/workflows/doctor.yml@main
+# Auto-sync: python neohiro-doctor/tools/sync_doctor_workflow.py --org all
+
 name: doctor-sync
 
 on:
