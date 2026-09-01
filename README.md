@@ -164,7 +164,7 @@ A huge thank you to the [DNSCrypt team](https://github.com/DNSCrypt) for creatin
 ---
 
 <div align="center">
-  <a href="https://www.freevisitorcounters.com/en/home/stats/id/1631177" rel="noopener noreferrer nofollow no-referrer"><img src="https://www.freevisitorcounters.com/en/counter/render/1631177/t/1" alt="Visitor counter" /></a>
+  <a href="https://www.freevisitorcounters.com/en/home/stats/id/1631177" rel="noopener noreferrer nofollow"><img src="https://www.freevisitorcounters.com/en/counter/render/1631177/t/1" alt="Visitor counter" /></a>
 </div>
 
 <p align="center">
