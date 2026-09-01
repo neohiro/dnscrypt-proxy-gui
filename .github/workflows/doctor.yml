@@ -1,1 +1,106 @@
-IyAuZ2l0aHViL3dvcmtmbG93cy9kb2N0b3IueW1sIC0tIG5lb2hpcm8vZG9jdG9yIHBlci1yZXBvIHdyYXBwZXIKIwojIFNtYXJ0IHBhdGggZmlsdGVyaW5nOiBzdGFnZXMgb25seSBydW4gd2hlbiByZWxldmFudCBmaWxlIHR5cGVzIGNoYW5nZS4KIyBDYW5vbmljYWwgc291cmNlOiBuZW9oaXJvL2RvY3Rvci8uZ2l0aHViL3dvcmtmbG93cy9kb2N0b3IueW1sQG1haW4KIyBBdXRvLXN5bmM6IHB5dGhvbiBuZW9oaXJvLWRvY3Rvci90b29scy9zeW5jX2RvY3Rvcl93b3JrZmxvdy5weSAtLW9yZyBhbGwKCm5hbWU6IGRvY3Rvci1zeW5jCgpvbjoKICBwdXNoOgogICAgYnJhbmNoZXM6CiAgICAgIC0gbWFpbgogICAgICAtIG1hc3RlcgogICAgICAtIGRldmVsb3AKICAgIHBhdGhzOgogICAgICAtICcqKi5weScKICAgICAgLSAnKiouc2gnCiAgICAgIC0gJyoqLm1kJwogICAgICAtICcqKi55YW1sJwogICAgICAtICcqKi55bWwnCiAgICAgIC0gJyoqLmpzb24nCiAgICAgIC0gJyoqLmpzb25sJwogICAgICAtICcuZ2l0aHViL3dvcmtmbG93cy9kb2N0b3IueW1sJwogIHB1bGxfcmVxdWVzdDoKICAgIHBhdGhzOgogICAgICAtICcqKi5weScKICAgICAgLSAnKiouc2gnCiAgICAgIC0gJyoqLm1kJwogICAgICAtICcqKi55YW1sJwogICAgICAtICcqKi55bWwnCiAgICAgIC0gJyoqLmpzb24nCiAgICAgIC0gJyoqLmpzb25sJwogICAgICAtICcuZ2l0aHViL3dvcmtmbG93cy9kb2N0b3IueW1sJwogIHNjaGVkdWxlOgogICAgLSBjcm9uOiAnNDIgNSwxNCwyMiAqICogKicKICB3b3JrZmxvd19kaXNwYXRjaDoKICByZXBvc2l0b3J5X2Rpc3BhdGNoOgogICAgdHlwZXM6IFtkb2N0b3Itc3luY10KCmVudjoKICBET0NUT1JfUkVQTzogbmVvaGlyby9kb2N0b3IKICBET0NUT1JfUkVGOiBtYWluCgpwZXJtaXNzaW9uczoKICBjb250ZW50czogcmVhZAoKam9iczoKICBwYXRoczoKICAgIG5hbWU6IEZpbHRlciBjaGFuZ2VkIHBhdGhzCiAgICBydW5zLW9uOiB1YnVudHUtbGF0ZXN0CiAgICBvdXRwdXRzOgogICAgICBweXRob246ICR7eyBzdGVwcy5maWx0ZXIub3V0cHV0cy5weXRob24gfX0KICAgICAgc2hlbGw6ICR7eyBzdGVwcy5maWx0ZXIub3V0cHV0cy5zaGVsbCB9fQogICAgICBkb2NzOiAke3sgc3RlcHMuZmlsdGVyLm91dHB1dHMuZG9jcyB9fQogICAgICB3b3JrZmxvd3M6ICR7eyBzdGVwcy5maWx0ZXIub3V0cHV0cy53b3JrZmxvd3MgfX0KICAgICAganNvbjogJHt7IHN0ZXBzLmZpbHRlci5vdXRwdXRzLmpzb24gfX0KICAgICAgeWFtbDogJHt7IHN0ZXBzLmZpbHRlci5vdXRwdXRzLnlhbWwgfX0KICAgICAgYW55OiAke3sgc3RlcHMuZmlsdGVyLm91dHB1dHMuYW55IH19CiAgICBzdGVwczoKICAgICAgLSB1c2VzOiBkb3JueS9wYXRocy1maWx0ZXJAZGU5MGNjNmZiMzhmYzA5NjNhZDcyYjIxMGYxYjI4NGNkNjhjZWEzNgogICAgICAgIGlkOiBmaWx0ZXIKICAgICAgICB3aXRoOgogICAgICAgICAgYmFzZTogJHt7IGdpdGh1Yi5ldmVudC5wdWxsX3JlcXVlc3QuYmFzZS5zaGEgfHwgZ2l0aHViLmV2ZW50LnJlcG9zaXRvcnkuZGVmYXVsdF9icmFuY2ggfX0KICAgICAgICAgIGZpbHRlcnM6IHwKICAgICAgICAgICAgcHl0aG9uOgogICAgICAgICAgICAgIC0gYWRkZWR8bW9kaWZpZWR8cmVuYW1lZDogJyoqLyoucHknCiAgICAgICAgICAgIHNoZWxsOgogICAgICAgICAgICAgIC0gYWRkZWR8bW9kaWZpZWR8cmVuYW1lZDogJyoqLyouc2gnCiAgICAgICAgICAgICAgLSBhZGRlZHxtb2RpZmllZHxyZW5hbWVkOiAnKiovKi5iYXNoJwogICAgICAgICAgICBkb2NzOgogICAgICAgICAgICAgIC0gYWRkZWR8bW9kaWZpZWR8cmVuYW1lZDogJyoqLyoubWQnCiAgICAgICAgICAgICAgLSBhZGRlZHxtb2RpZmllZHxyZW5hbWVkOiAnKiovKi50eHQnCiAgICAgICAgICAgIHdvcmtmbG93czoKICAgICAgICAgICAgICAtIGFkZGVkfG1vZGlmaWVkfHJlbmFtZWQ6ICcuZ2l0aHViL3dvcmtmbG93cy8qLnltbCcKICAgICAgICAgICAgICAtIGFkZGVkfG1vZGlmaWVkfHJlbmFtZWQ6ICcuZ2l0aHViL3dvcmtmbG93cy8qLnlhbWwnCiAgICAgICAgICAgIGpzb246CiAgICAgICAgICAgICAgLSBhZGRlZHxtb2RpZmllZHxyZW5hbWVkOiAnKiovKi5qc29uJwogICAgICAgICAgICAgIC0gYWRkZWR8bW9kaWZpZWR8cmVuYW1lZDogJyoqLyouanNvbmwnCiAgICAgICAgICAgIHlhbWw6CiAgICAgICAgICAgICAgLSBhZGRlZHxtb2RpZmllZHxyZW5hbWVkOiAnKiovKi55YW1sJwogICAgICAgICAgICAgIC0gYWRkZWR8bW9kaWZpZWR8cmVuYW1lZDogJyoqLyoueW1sJwogICAgICAgICAgbGlzdC1maWxlczogbm9uZQoKICBzdGFnZS1hOgogICAgbmFtZTogU3RhZ2UgQSAuIHJ1ZmYgKyBqc29uL3lhbWwKICAgIG5lZWRzOiBwYXRocwogICAgaWY6IG5lZWRzLnBhdGhzLm91dHB1dHMuYW55ID09ICd0cnVlJwogICAgdXNlczogbmVvaGlyby9kb2N0b3IvLmdpdGh1Yi93b3JrZmxvd3MvcmV1c2FibGUtZG9jdG9yLnltbEBtYWluCiAgICB3aXRoOgogICAgICB0YXJnZXRfcmVwbzogJHt7IGdpdGh1Yi5yZXBvc2l0b3J5IH19CiAgICAgIHRhcmdldF9zaGE6ICR7eyBnaXRodWIuZXZlbnQucHVsbF9yZXF1ZXN0LmhlYWQuc2hhIHx8IGdpdGh1Yi5zaGEgfX0KICAgICAgdHJpZ2dlcjogJHt7IGdpdGh1Yi5ldmVudF9uYW1lIH19CiAgICAgIHByb2ZpbGU6IGZhc3QKICAgIHNlY3JldHM6CiAgICAgIHJlcG9fdG9rZW46ICR7eyBzZWNyZXRzLkdJVEhVQl9UT0tFTiB9fQoKICBzdGFnZS1iOgogICAgbmFtZTogU3RhZ2UgQiAuIHNoZWxsICsgd29ya2Zsb3dzCiAgICBuZWVkczogcGF0aHMKICAgIGlmOiBuZWVkcy5wYXRocy5vdXRwdXRzLnNoZWxsID09ICd0cnVlJyB8fCBuZWVkcy5wYXRocy5vdXRwdXRzLndvcmtmbG93cyA9PSAndHJ1ZScKICAgIHVzZXM6IG5lb2hpcm8vZG9jdG9yLy5naXRodWIvd29ya2Zsb3dzL3JldXNhYmxlLWRvY3Rvci55bWxAbWFpbgogICAgd2l0aDoKICAgICAgdGFyZ2V0X3JlcG86ICR7eyBnaXRodWIucmVwb3NpdG9yeSB9fQogICAgICB0YXJnZXRfc2hhOiAke3sgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVzdC5oZWFkLnNoYSB8fCBnaXRodWIuc2hhIH19CiAgICAgIHRyaWdnZXI6ICR7eyBnaXRodWIuZXZlbnRfbmFtZSB9fQogICAgICBwcm9maWxlOiBmdWxsCiAgICBzZWNyZXRzOgogICAgICByZXBvX3Rva2VuOiAke3sgc2VjcmV0cy5HSVRIVUJfVE9LRU4gfX0KCiAgc3RhZ2UtYzoKICAgIG5hbWU6IFN0YWdlIEMgLiBhY3RpdmUtZGlyZWN0b3J5ICsgZG9jdG9yIHN1aXRlCiAgICBuZWVkczogcGF0aHMKICAgIGlmOiBnaXRodWIuZXZlbnRfbmFtZSA9PSAnc2NoZWR1bGUnIHx8IGdpdGh1Yi5ldmVudF9uYW1lID09ICd3b3JrZmxvd19kaXNwYXRjaCcgfHwgZ2l0aHViLmV2ZW50X25hbWUgPT0gJ3JlcG9zaXRvcnlfZGlzcGF0Y2gnCiAgICB1c2VzOiBuZW9oaXJvL2RvY3Rvci8uZ2l0aHViL3dvcmtmbG93cy9yZXVzYWJsZS1kb2N0b3IueW1sQG1haW4KICAgIHdpdGg6CiAgICAgIHRhcmdldF9yZXBvOiAke3sgZ2l0aHViLnJlcG9zaXRvcnkgfX0KICAgICAgdGFyZ2V0X3NoYTogJHt7IGdpdGh1Yi5ldmVudC5wdWxsX3JlcXVlc3QuaGVhZC5zaGEgfHwgZ2l0aHViLnNoYSB9fQogICAgICB0cmlnZ2VyOiAke3sgZ2l0aHViLmV2ZW50X25hbWUgfX0KICAgICAgcHJvZmlsZTogZnVsbAogICAgc2VjcmV0czoKICAgICAgcmVwb190b2tlbjogJHt7IHNlY3JldHMuR0lUSFVCX1RPS0VOIH19Cg==
+# .github/workflows/doctor.yml -- neohiro/doctor per-repo wrapper
+#
+# Smart path filtering: stages only run when relevant file types change.
+# Canonical source: neohiro/doctor/.github/workflows/doctor.yml@main
+# Auto-sync: python neohiro-doctor/tools/sync_doctor_workflow.py --org all
+
+name: doctor-sync
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+  schedule:
+    - cron: '42 5,14,22 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [doctor-sync]
+
+env:
+  DOCTOR_REPO: neohiro/doctor
+  DOCTOR_REF: main
+
+permissions:
+  contents: read
+
+jobs:
+  paths:
+    name: Filter changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      shell: ${{ steps.filter.outputs.shell }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+      json: ${{ steps.filter.outputs.json }}
+      yaml: ${{ steps.filter.outputs.yaml }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1b284cd68cea36
+        id: filter
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          filters: |
+            python:
+              - added|modified|renamed: '**/*.py'
+            shell:
+              - added|modified|renamed: '**/*.sh'
+              - added|modified|renamed: '**/*.bash'
+            docs:
+              - added|modified|renamed: '**/*.md'
+              - added|modified|renamed: '**/*.txt'
+            workflows:
+              - added|modified|renamed: '.github/workflows/*.yml'
+              - added|modified|renamed: '.github/workflows/*.yaml'
+            json:
+              - added|modified|renamed: '**/*.json'
+              - added|modified|renamed: '**/*.jsonl'
+            yaml:
+              - added|modified|renamed: '**/*.yaml'
+              - added|modified|renamed: '**/*.yml'
+          list-files: none
+
+  stage-a:
+    name: Stage A . ruff + json/yaml
+    needs: paths
+    if: needs.paths.outputs.any == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: fast
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+  stage-b:
+    name: Stage B . shell + workflows
+    needs: paths
+    if: needs.paths.outputs.shell == 'true' || needs.paths.outputs.workflows == 'true'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: full
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+  stage-c:
+    name: Stage C . active-directory + doctor suite
+    needs: paths
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: full
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
