@@ -1,0 +1,106 @@
+# .github/workflows/doctor.yml -- neohiro/doctor per-repo wrapper
+#
+# Smart path filtering: stages only run when relevant file types change.
+# Canonical source: neohiro/doctor/.github/workflows/doctor.yml@main
+# Auto-sync: python neohiro-doctor/tools/sync_doctor_workflow.py --org all
+
+name: doctor-sync
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+  schedule:
+    - cron: '42 5,14,22 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [doctor-sync]
+
+env:
+  DOCTOR_REPO: neohiro/doctor
+  DOCTOR_REF: main
+
+permissions:
+  contents: read
+
+jobs:
+  paths:
+    name: Filter changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      shell: ${{ steps.filter.outputs.shell }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+      json: ${{ steps.filter.outputs.json }}
+      yaml: ${{ steps.filter.outputs.yaml }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1b284cd68cea36
+        id: filter
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          filters: |
+            python:
+              - added|modified|renamed: '**/*.py'
+            shell:
+              - added|modified|renamed: '**/*.sh'
+              - added|modified|renamed: '**/*.bash'
+            docs:
+              - added|modified|renamed: '**/*.md'
+              - added|modified|renamed: '**/*.txt'
+            workflows:
+              - added|modified|renamed: '.github/workflows/*.yml'
+              - added|modified|renamed: '.github/workflows/*.yaml'
+            json:
+              - added|modified|renamed: '**/*.json'
+              - added|modified|renamed: '**/*.jsonl'
+            yaml:
+              - added|modified|renamed: '**/*.yaml'
+              - added|modified|renamed: '**/*.yml'
+          list-files: none
+
+  stage-a:
+    name: Stage A . ruff + json/yaml
+    needs: paths
+    if: needs.paths.outputs.any == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: fast
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+  stage-b:
+    name: Stage B . shell + workflows
+    needs: paths
+    if: needs.paths.outputs.shell == 'true' || needs.paths.outputs.workflows == 'true'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: full
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+  stage-c:
+    name: Stage C . active-directory + doctor suite
+    needs: paths
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    uses: neohiro/doctor/.github/workflows/reusable-doctor.yml@main
+    with:
+      target_repo: ${{ github.repository }}
+      target_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      trigger: ${{ github.event_name }}
+      profile: full
+    secrets:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
