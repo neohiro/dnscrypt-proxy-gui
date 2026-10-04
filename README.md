@@ -164,7 +164,8 @@ A huge thank you to the [DNSCrypt team](https://github.com/DNSCrypt) for creatin
 ---
 
 <div align="center">
-  <script type="text/javascript" src="https://www.freevisitorcounters.com/en/home/counter/1631177/t/1" defer></script>
+  <a href="https://visitorbadge.io/status?path=github.com%2Fneohiro%2Fdnscrypt-proxy-gui" rel="noopener noreferrer nofollow">
+    <img src="https://api.visitorbadge.io/api/visitors?path=github.com%2Fneohiro%2Fdnscrypt-proxy-gui&label=Visitors&countColor=%23263759" alt="Visitors" /></a>
 </div>
 
 <p align="center">
