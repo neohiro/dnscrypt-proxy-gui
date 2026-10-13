@@ -36,14 +36,21 @@ if platform.system() == "Windows":
 
 # --- Constants ---
 APP_NAME = "DNSCryptClientGUI"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 
 # dnscrypt-proxy cache tunables. Note: cache_size counts ENTRIES, not bytes.
 CACHE_SIZE_DEFAULT, CACHE_SIZE_MIN, CACHE_SIZE_MAX = 512, 64, 1 << 20
 CACHE_TTL_DEFAULT, CACHE_TTL_MIN, CACHE_TTL_MAX = 60, 0, 7 * 24 * 3600
 
+# Update-check endpoints.
+#   GUI release: neohiro/dnscrypt-proxy-gui (this project).
+#   Engine release: DNSCrypt/dnscrypt-proxy (bundled engine source).
+# Both return GitHub's standard release JSON ("tag_name", "html_url", "name");
+# unauthenticated calls are rate-limited to 60 req/hr per IP.
 LATEST_RELEASE_API = "https://api.github.com/repos/neohiro/dnscrypt-proxy-gui/releases/latest"
+LATEST_ENGINE_RELEASE_API = "https://api.github.com/repos/DNSCrypt/dnscrypt-proxy/releases/latest"
 RELEASES_PAGE = "https://github.com/neohiro/dnscrypt-proxy-gui/releases/latest"
+ENGINE_RELEASES_PAGE = "https://github.com/DNSCrypt/dnscrypt-proxy/releases/latest"
 RESOLVERS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
 RELAYS_URL = "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md"
 CONFIG_FILE = "dnscrypt-proxy.toml"
@@ -61,15 +68,29 @@ if sys.platform == "win32" and getattr(sys, 'frozen', False):
     sys.stderr = NullWriter()
 
 def is_admin():
+    """Check if the process is running with admin/root privileges.
+
+    The result is cached after the first *successful* call. Admin status does
+    not change for the lifetime of a process (privilege can only be gained via
+    a new process, e.g. ShellExecuteW with runas), so repeated calls from
+    _run_hidden, the activation path, and the startup elevation check would
+    otherwise pay the cost of ctypes + Windows syscall on every call.
+    A transient OSError during the check is NOT cached, so the next call
+    gets a fresh attempt rather than permanently caching a failure."""
+    cached = getattr(is_admin, "_cached_result", None)
+    if cached is not None:
+        return cached
     try:
         if platform.system() == "Windows":
             import ctypes
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+            result = ctypes.windll.shell32.IsUserAnAdmin() != 0
         else:
-            return os.geteuid() == 0
+            result = os.geteuid() == 0
     except Exception:
         LOG.debug("Admin check failed", exc_info=True)
         return False
+    is_admin._cached_result = result
+    return result
 
 # --- Logging ---
 # A rotating file log is essential for a GUI that suppresses stdout when
@@ -283,13 +304,28 @@ class DNSCryptClientGUI:
 
         # --- Configurable system paths (#3): sensible per-OS defaults ---
         is_windows = platform.system() == "Windows"
-        _default_proxy = os.path.join(self.base_path, "dnscrypt-proxy" + (".exe" if is_windows else ""))
         if is_windows:
             _default_cfg_dir = self.base_path
         else:
             _default_cfg_dir = "/etc/dnscrypt-proxy"
-        self.proxy_path_var = tk.StringVar(value=self.settings.get("proxy_executable_path", "") or _default_proxy)
+        self.proxy_path_var = tk.StringVar(value="")  # resolved by check_proxy_executable()
         self.config_dir_var = tk.StringVar(value=self.settings.get("config_dir", "") or _default_cfg_dir)
+        self.engine_version = ""  # populated by _on_version_probe_done
+        self._version_probe_thread = None  # single in-flight probe at a time
+        # Engine update check: cached for re-application when the version probe
+        # lands after the upstream-version check (or vice versa).
+        self._engine_update_url = None
+        self._engine_release_tag = ""
+        self._engine_release_url = ""
+        # ETag-based cache for release check requests (reduces GitHub API usage).
+        self._gui_release_etag = self.settings.get("gui_release_etag", "") or ""
+        self._gui_cached_release_tag = self.settings.get("gui_cached_release_tag", "") or ""
+        self._gui_cached_release_url = self.settings.get("gui_cached_release_url", "") or ""
+        self._update_url = self.settings.get("gui_update_url", "") or None
+        self._engine_release_etag = self.settings.get("engine_release_etag", "") or ""
+        self._engine_cached_release_tag = self.settings.get("engine_cached_release_tag", "") or ""
+        self._engine_cached_release_url = self.settings.get("engine_cached_release_url", "") or ""
+        self._engine_update_url = self.settings.get("engine_update_url", "") or None
 
         # --- FIX: Recover From a Previous Crashed Session (Threaded) ---
         # Only acts when this app previously changed the DNS and left a
@@ -312,10 +348,30 @@ class DNSCryptClientGUI:
         self._ui_queue = queue.Queue()
         self.root.after(100, self._drain_ui_queue)
 
+        # Apply any release hints we remembered from the previous session so
+        # the Configuration tab shows them immediately. The background
+        # thread will refresh them.
+        self._apply_cached_release_hints()
+
         # Silent update probe at startup: failures never surface, an
         # available update quietly lights up the Configuration tab row.
         threading.Thread(target=lambda: self._update_check_worker(False),
                          daemon=True, name="update-check").start()
+
+        # Settings-file watcher: detect external edits (config management
+        # tools, manual edits) and reload the in-memory state. Skips the
+        # change if it is the result of our own save.
+        self._settings_watcher_stop = threading.Event()
+        self._last_self_save_mtime = 0.0
+        try:
+            self._last_self_save_mtime = os.path.getmtime(self.settings_file)
+        except OSError:
+            self._last_self_save_mtime = 0.0
+        self._settings_watcher_thread = threading.Thread(
+            target=self._settings_file_watcher, daemon=True,
+            name="settings-watcher"
+        )
+        self._settings_watcher_thread.start()
 
         self.check_proxy_executable()
         self.check_startup_status()
@@ -385,7 +441,15 @@ class DNSCryptClientGUI:
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps
         ])
         output = (result.stdout or "").strip()
-        entries = json.loads(output) if output else []
+        if output:
+            try:
+                entries = json.loads(output)
+            except json.JSONDecodeError:
+                raise Exception(
+                    f"PowerShell returned unparseable output (not JSON): {output[:200]!r}"
+                ) from None
+        else:
+            entries = []
         if isinstance(entries, dict):
             entries = [entries]
         snapshot = {}
@@ -491,14 +555,17 @@ class DNSCryptClientGUI:
         if os.path.exists(self.dns_backup_file):
             return  # untouched backup from a previous session takes priority
         system = platform.system()
-        if system == "Windows":
-            payload = {"platform": system, "adapters": self._snapshot_dns_windows()}
-        elif system == "Darwin":
-            payload = {"platform": system, "services": self._snapshot_dns_macos()}
-        elif system == "Linux":
-            payload = {"platform": system, **self._snapshot_dns_linux()}
-        else:
-            return
+        try:
+            if system == "Windows":
+                payload = {"platform": system, "adapters": self._snapshot_dns_windows()}
+            elif system == "Darwin":
+                payload = {"platform": system, "services": self._snapshot_dns_macos()}
+            elif system == "Linux":
+                payload = {"platform": system, **self._snapshot_dns_linux()}
+            else:
+                return
+        except Exception as e:
+            raise Exception(f"Failed to snapshot current DNS settings: {e}") from e
         tmp_path = self.dns_backup_file + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -507,22 +574,26 @@ class DNSCryptClientGUI:
     def restore_dns_backup(self):
         """Restore the exact pre-GUI DNS configuration.
 
-        Returns True when a backup existed and was fully applied. When no
-        backup exists this deliberately does nothing - it must never guess.
-        On PARTIAL failure the backup file is kept so Restore DNS can be
-        retried; callers must not fall back to reset-to-DHCP in that case
-        (see _revert_after_restore_attempt)."""
+        Returns one of:
+          True       — backup existed and was fully applied; backup file removed.
+          False      — backup existed but restore was PARTIAL; backup file kept
+                       on disk so Restore DNS can be retried. Callers must NOT
+                       fall back to reset-to-DHCP in this case.
+          None       — no backup existed; nothing to do, nothing to retry.
+        Distinguishing "no backup" from "partial restore" lets callers detect
+        the corrupt-JSON / "we tried and failed" case without conflating it
+        with "fresh install, no backup to begin with"."""
         try:
             with open(self.dns_backup_file, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
         except FileNotFoundError:
-            return False
+            return None
         except Exception:
             LOG.warning("Corrupt DNS backup at %s", self.dns_backup_file, exc_info=True)
-            return False  # corrupt backup: caller decides on fallback policy
+            return False  # corrupt: caller may fall through to DHCP reset
         system = platform.system()
         if payload.get("platform") != system:
-            return False
+            return False  # wrong platform: caller may fall through
         if system == "Windows":
             failures = self._restore_dns_windows(payload.get("adapters", {}))
         elif system == "Darwin":
@@ -541,7 +612,7 @@ class DNSCryptClientGUI:
             os.remove(self.dns_backup_file)
         except OSError:
             pass
-        return not failures
+        return True
 
     def stop_proxy_only(self):
         """Terminate the dnscrypt-proxy child process without any other
@@ -556,7 +627,11 @@ class DNSCryptClientGUI:
                     proc.kill()
                 except Exception:
                     pass
-        self.proxy_process = None
+            self.proxy_process = None
+        drain = getattr(self, "_proxy_log_thread", None)
+        if drain:
+            drain.join(timeout=1.0)
+            self._proxy_log_thread = None
 
     def load_app_icon(self):
         potential_paths = []
@@ -576,34 +651,165 @@ class DNSCryptClientGUI:
                 except Exception:
                     LOG.debug("Could not load app icon from %s", p, exc_info=True)
 
+    def _discover_engine(self):
+        """Find the best available dnscrypt-proxy engine.
+
+        Discovery order (first found wins):
+          1. User-configured explicit path  → "explicit"
+          2. System install on $PATH         → "system"
+          3. Bundled engine (app dir / frozen _MEIPASS) → "bundled"
+          4. Not found                       → "missing"
+
+        Returns (resolved_path, source_tag).  source is one of:
+        "explicit", "system", "bundled", "missing".
+
+        Note: the explicit path is validated for existence/executability; a
+        stale or non-runnable entry is downgraded so the caller can fall
+        through to a working engine instead of pinning to a broken one."""
+        explicit = self.settings.get("proxy_executable_path", "").strip()
+        if explicit and self._is_runnable(explicit):
+            return explicit, "explicit"
+
+        exe_name = "dnscrypt-proxy" + (".exe" if platform.system() == "Windows" else "")
+
+        system_path = shutil.which(exe_name)
+        if system_path:
+            return system_path, "system"
+
+        bundled_candidates = [os.path.join(self.base_path, exe_name)]
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            bundled_candidates.insert(0, os.path.join(sys._MEIPASS, exe_name))
+
+        for candidate in bundled_candidates:
+            if self._is_runnable(candidate):
+                return candidate, "bundled"
+
+        return "", "missing"
+
+    @staticmethod
+    def _is_runnable(path):
+        """True if `path` is a file and, on POSIX, is marked executable.
+
+        Mirrors the checks `_proxy_available` applies after discovery; kept
+        in one place so the "what counts as runnable" policy cannot drift."""
+        if not path:
+            return False
+        if not os.path.isfile(path):
+            return False
+        if platform.system() == "Windows":
+            return True
+        return os.access(path, os.X_OK)
+
     def check_proxy_executable(self):
-        candidate = self.proxy_path_var.get().strip()
-        if not candidate:
-            exe_name = "dnscrypt-proxy" + (".exe" if platform.system() == "Windows" else "")
-            local_candidate = os.path.join(self.base_path, exe_name)
-            candidate = local_candidate if os.path.exists(local_candidate) else exe_name
-        self.proxy_executable = candidate
+        path, source = self._discover_engine()
+        self.proxy_executable = path
+        self.proxy_path_var.set(path)
+
         if self._proxy_available():
+            if source == "system":
+                LOG.info("Using system dnscrypt-proxy: %s", path)
+            elif source == "bundled":
+                LOG.info("Using bundled dnscrypt-proxy: %s", path)
+            # Probe the engine version in the background so the UI never
+            # blocks on a hung binary. The path is captured in the closure so
+            # a newer discovery cannot have its label overwritten by a stale
+            # probe from a previous path. An in-flight prior probe's result
+            # is dropped by the path-comparison guard in _on_version_probe_done.
+            prior = self._version_probe_thread
+            if prior is not None and prior.is_alive():
+                pass  # prior probe runs to completion; its result is discarded
+            self._version_probe_thread = threading.Thread(
+                target=lambda p=path: self._post_ui(
+                    lambda q=p: self._on_version_probe_done(q)
+                ),
+                daemon=True, name="version-probe"
+            )
+            self._version_probe_thread.start()
             self.activate_button.config(state=tk.NORMAL)
         else:
-            messagebox.showwarning(
-                "Executable Not Found",
-                f"'{candidate}' was not found.\n\n"
-                "Place dnscrypt-proxy next to the GUI, install it on your PATH, "
-                "or set the exact location on the Configuration tab.",
-                parent=self.root,
-            )
+            if source == "explicit":
+                msg = (
+                    f"The configured path '{path}' could not be found or is not "
+                    "executable.\n\nCheck the path on the Configuration tab."
+                )
+            elif source == "system":
+                msg = (
+                    "dnscrypt-proxy was found on your system at the default "
+                    f"PATH location ({path}), but it could not be executed.\n\n"
+                    "Check that the installation is complete, or set a custom "
+                    "path on the Configuration tab."
+                )
+            else:
+                msg = (
+                    "No dnscrypt-proxy engine was found.\n\n"
+                    "The release archive includes one next to the GUI executable. "
+                    "If you moved it, re-download the archive. You can also "
+                    "install dnscrypt-proxy on your system or set a custom "
+                    "path on the Configuration tab."
+                )
+            messagebox.showwarning("Executable Not Found", msg, parent=self.root)
             self.activate_button.config(state=tk.DISABLED)
+            self.engine_version = ""
+            label = getattr(self, "engine_version_label", None)
+            if label is not None:
+                label.config(text="(not found)", foreground="gray", cursor="arrow")
+
+    def _probe_engine_version(self, path):
+        """Best-effort `dnscrypt-proxy -version` probe.
+
+        Returns the upstream version string (e.g. "2.1.18") or "" on any
+        failure. Runs on a background thread (max 3s) so a hung binary
+        cannot block startup."""
+        if not path or not self._is_runnable(path):
+            return ""
+        try:
+            run_args = self._get_hidden_subprocess_args()
+            proc = subprocess.run(
+                [path, "-version"],
+                capture_output=True, text=True, timeout=3, **run_args
+            )
+            out = (proc.stdout or proc.stderr or "").strip()
+            # Anchored to the "dnscrypt-proxy" prefix so a stray Go runtime
+            # string in stderr cannot be mistaken for the engine version.
+            m = re.search(r"dnscrypt-proxy[^0-9]*v?(\d+\.\d+\.\d+)", out, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        except Exception:
+            LOG.debug("Engine version probe failed for %s", path, exc_info=True)
+        return ""
+
+    def _on_version_probe_done(self, path):
+        """UI callback fired once the background version probe completes.
+
+        `path` is the engine path at the moment the probe was scheduled, so
+        a discovery made after a re-apply does not get its label overwritten
+        by a stale probe from a previous binary.
+
+        The probe is best-effort: a missing or hung binary must never
+        disable the activate button or surface an error."""
+        # Drop the result if the user has already re-discovered a different
+        # engine - the new probe (or none) will refresh the label.
+        if path != self.proxy_executable:
+            return
+        version = self._probe_engine_version(path)
+        self.engine_version = version
+        label = getattr(self, "engine_version_label", None)
+        if label is not None:
+            if version:
+                label.config(text=version, foreground="", cursor="arrow")
+            else:
+                label.config(text="(not found)", foreground="gray", cursor="arrow")
+        # A new probe may have changed engine_version; if the engine-update
+        # check has already run, re-apply its result so the "X -> Y available"
+        # or "up to date" verdict reflects the freshly-detected version.
+        cached_tag = getattr(self, "_engine_release_tag", None)
+        cached_url = getattr(self, "_engine_release_url", None)
+        if cached_tag and version:
+            self._apply_engine_update_result(cached_tag, cached_url)
 
     def _proxy_available(self):
-        """True when the configured proxy can actually be launched.
-
-        The candidate may be a bare name that only resolves via PATH, so a
-        plain os.path.exists() check is not sufficient here."""
-        candidate = getattr(self, 'proxy_executable', '')
-        return bool(candidate) and (
-            os.path.isfile(candidate) or shutil.which(candidate) is not None
-        )
+        """True when the configured proxy can actually be launched."""
+        return self._is_runnable(getattr(self, 'proxy_executable', ''))
 
     def setup_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -613,7 +819,12 @@ class DNSCryptClientGUI:
         activation_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.activate_button = ttk.Button(activation_frame, text="Activate Selected Server(s)", command=self.toggle_activation, state=tk.DISABLED)
-        self.activate_button.pack(side=tk.RIGHT, padx=10, pady=5)
+        self.activate_button.pack(side=tk.RIGHT, padx=(5, 10), pady=5)
+        self.restart_button = ttk.Button(
+            activation_frame, text="Restart Proxy", command=self.update_config_and_restart_proxy,
+            state=tk.DISABLED, width=13,
+        )
+        self.restart_button.pack(side=tk.RIGHT, padx=5, pady=5)
         
         startup_check = ttk.Checkbutton(activation_frame, text="Run at system startup", variable=self.startup_var, command=self.toggle_startup)
         startup_check.pack(side=tk.RIGHT, padx=5)
@@ -763,19 +974,38 @@ class DNSCryptClientGUI:
 
         ttk.Label(parent, text="Changes are applied immediately if the service is active.", style="Status.TLabel").pack(pady=(14, 4))
 
-        # Version row - deliberately the last thing on the tab and quiet.
-        update_frame = ttk.Frame(parent)
-        update_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 2))
-        self._update_url = None
-        self.update_status_label = ttk.Label(update_frame,
-                                             text=f"Version {APP_VERSION}",
-                                             style="Status.TLabel")
-        self.update_status_label.pack(side=tk.LEFT)
+        updates_frame = ttk.LabelFrame(parent, text="Updates", padding=10)
+        updates_frame.pack(fill=tk.X, pady=5, padx=5, side=tk.BOTTOM, anchor=tk.S)
+
+        gui_ver_row = ttk.Frame(updates_frame)
+        gui_ver_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(gui_ver_row, text="GUI version:", width=16, anchor=tk.W).pack(side=tk.LEFT)
+        self.gui_version_label = ttk.Label(gui_ver_row, text=f"v{APP_VERSION}",
+                                          font=("", 9, "bold"), anchor=tk.W)
+        self.gui_version_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.update_status_label = ttk.Label(gui_ver_row, text="up to date",
+                                            style="Status.TLabel", anchor=tk.W)
+        self.update_status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.update_status_label.bind("<Button-1>", self._open_update_link)
-        self.check_updates_button = ttk.Button(update_frame, width=18,
-                                               text="Check for update",
+        self.gui_version_label.bind("<Button-1>", self._open_update_link)
+
+        engine_ver_row = ttk.Frame(updates_frame)
+        engine_ver_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(engine_ver_row, text="Engine version:", width=16, anchor=tk.W).pack(side=tk.LEFT)
+        self._engine_update_url = None
+        self.engine_version_label = ttk.Label(engine_ver_row, text="(probing...)",
+                                             font=("", 9, "bold"), foreground="gray",
+                                             anchor=tk.W, cursor="arrow")
+        self.engine_version_label.pack(side=tk.LEFT, padx=(0, 8), fill=tk.X, expand=True)
+        self.engine_version_label.bind("<Button-1>", self._open_engine_update_link)
+
+        btn_row = ttk.Frame(updates_frame)
+        btn_row.pack(fill=tk.X)
+        self._update_url = None
+        self.check_updates_button = ttk.Button(btn_row, width=20,
+                                               text="Check for updates",
                                                command=self.manual_update_check)
-        self.check_updates_button.pack(side=tk.RIGHT)
+        self.check_updates_button.pack(side=tk.LEFT)
 
     def _browse_path(self, target_var, kind):
         if kind == "file":
@@ -822,12 +1052,37 @@ class DNSCryptClientGUI:
             "cache_neg_ttl": self.cache_neg_ttl_var.get(),
             "cache_min_ttl": self.cache_min_ttl_var.get(),
             "proxy_executable_path": self.proxy_path_var.get(),
-            "config_dir": self.config_dir_var.get()
+            "config_dir": self.config_dir_var.get(),
+            # Release check cache: avoids a network round-trip on cold start so
+            # the Configuration tab can immediately show update hints from the
+            # previous session. Etags reduce GitHub API usage on repeat calls.
+            "gui_release_etag": getattr(self, "_gui_release_etag", "") or "",
+            "gui_cached_release_tag": getattr(self, "_gui_cached_release_tag", "") or "",
+            "gui_cached_release_url": getattr(self, "_gui_cached_release_url", "") or "",
+            "gui_update_url": getattr(self, "_update_url", "") or "",
+            "engine_release_etag": getattr(self, "_engine_release_etag", "") or "",
+            "engine_cached_release_tag": getattr(self, "_engine_cached_release_tag", "") or "",
+            "engine_cached_release_url": getattr(self, "_engine_cached_release_url", "") or "",
+            "engine_update_url": getattr(self, "_engine_update_url", "") or "",
         }
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(settings_to_save, f, indent=4)
-        except Exception: pass 
+            try:
+                # Bump the recorded mtime slightly ahead of the file's
+                # recorded value. Some filesystems (notably FAT/exFAT on
+                # Windows) round mtime to a 2s boundary, so reading the
+                # mtime immediately after writing can yield a value that
+                # is *less* than the actual write time, causing the
+                # watcher to think our own save was an external edit.
+                mtime = os.path.getmtime(self.settings_file)
+                self._last_self_save_mtime = mtime + 0.5
+            except OSError:
+                pass
+        except OSError as e:
+            LOG.warning("Could not save settings to %s: %s", self.settings_file, e)
+        except Exception as e:
+            LOG.error("Unexpected error saving settings to %s: %s", self.settings_file, e)
 
     def load_settings(self):
         try:
@@ -839,6 +1094,71 @@ class DNSCryptClientGUI:
                 "block_ipv6": False, "require_dnssec": False, "require_nolog": False,
                 "require_nofilter": False, "cache_size": "512", "cache_neg_ttl": "60", "cache_min_ttl": "60"
             }
+
+    def _settings_file_watcher(self):
+        while not self._settings_watcher_stop.is_set():
+            # Wake up to 1s early on shutdown rather than waiting the full sleep.
+            if self._settings_watcher_stop.wait(timeout=5):
+                break
+            try:
+                current_mtime = os.path.getmtime(self.settings_file)
+            except OSError:
+                continue
+            if current_mtime == self._last_self_save_mtime:
+                continue
+            self._post_ui(self._reload_settings_from_disk)
+
+    def _reload_settings_from_disk(self):
+        try:
+            with open(self.settings_file) as f:
+                fresh = json.load(f)
+        except Exception:
+            return
+        # Merge fresh file into in-memory state.
+        self.settings.update(fresh)
+        # Update GUI-facing variables from fresh settings.
+        protocol = fresh.get("ui_filter_protocol", "All Protocols")
+        try:
+            self.protocol_filter_var.set(protocol)
+        except tk.TclError:
+            pass
+        for attr, key in [
+            ("block_ipv6_var", "block_ipv6"),
+            ("require_dnssec_var", "require_dnssec"),
+            ("require_nolog_var", "require_nolog"),
+            ("require_nofilter_var", "require_nofilter"),
+        ]:
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.set(fresh.get(key, False))
+                except tk.TclError:
+                    pass
+        for attr, key in [("cache_size_var", "cache_size"),
+                          ("cache_neg_ttl_var", "cache_neg_ttl"),
+                          ("cache_min_ttl_var", "cache_min_ttl")]:
+            w = getattr(self, attr, None)
+            if w is not None:
+                val = fresh.get(key, "")
+                try:
+                    w.set(val)
+                except tk.TclError:
+                    pass
+        proxy_path = fresh.get("proxy_executable_path", "")
+        if proxy_path:
+            try:
+                self.proxy_path_var.set(proxy_path)
+            except tk.TclError:
+                pass
+        config_dir = fresh.get("config_dir", "")
+        if config_dir:
+            try:
+                self.config_dir_var.set(config_dir)
+            except tk.TclError:
+                pass
+        # Refresh release hint labels if fresh data is available.
+        self._apply_cached_release_hints()
+        LOG.info("Settings reloaded from disk (external edit detected)")
 
     def save_server_cache(self):
         if not self.server_data: return
@@ -1190,7 +1510,7 @@ class DNSCryptClientGUI:
         return nums
 
     @staticmethod
-    def _evaluate_update(tag, current=APP_VERSION):
+    def _evaluate_update(tag, current):
         """Classify the latest remote tag against the running version.
 
         Returns (kind, display, url) where kind is one of
@@ -1205,79 +1525,315 @@ class DNSCryptClientGUI:
         return ("current", f"v{running[0]}.{running[1]}.{running[2]}", "")
 
     def _fetch_latest_release(self):
-        """Query GitHub for the latest published release.
+        """Query GitHub for the latest published GUI release.
 
         Returns (tag, html_url), or (None, None) on any failure - callers
-        treat that as 'check failed' rather than 'up to date'."""
+        treat that as 'check failed' rather than 'up to date'.
+
+        Uses the ETag stored on the instance (from a previous fetch) to send
+        an If-None-Match conditional GET; a 304 response reuses the cached
+        (tag, url) without re-parsing JSON."""
+        return self._fetch_release_with_etag(
+            LATEST_RELEASE_API, RELEASES_PAGE,
+            etag_attr="_gui_release_etag",
+            cache_tag_attr="_gui_cached_release_tag",
+            cache_url_attr="_gui_cached_release_url",
+            log_label="GUI",
+        )
+
+    def _fetch_latest_engine_release(self):
+        """Query GitHub for the latest upstream dnscrypt-proxy release.
+
+        Returns (tag, html_url), or (None, None) on any failure. Same
+        conditional-GET pattern as _fetch_latest_release."""
+        return self._fetch_release_with_etag(
+            LATEST_ENGINE_RELEASE_API, ENGINE_RELEASES_PAGE,
+            etag_attr="_engine_release_etag",
+            cache_tag_attr="_engine_cached_release_tag",
+            cache_url_attr="_engine_cached_release_url",
+            log_label="Engine",
+        )
+
+    def _fetch_release_with_etag(self, url, fallback_page, etag_attr,
+                                  cache_tag_attr, cache_url_attr, log_label):
+        """Shared fetch helper with ETag-based conditional GET support.
+
+        On 304 Not Modified, returns the previously cached (tag, html_url)
+        from cache_tag_attr/cache_url_attr without re-parsing JSON. On 200,
+        updates the cache and stores the new ETag in etag_attr. On any other
+        failure (timeout, network error, non-2xx) returns (None, None) so
+        the caller can treat it as 'check inconclusive'."""
         try:
             import requests
-            resp = requests.get(
-                LATEST_RELEASE_API,
-                timeout=10,
-                headers={
-                    "User-Agent": f"{APP_NAME}/{APP_VERSION}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
+            headers = {
+                "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+            }
+            cached_etag = getattr(self, etag_attr, "") or ""
+            if cached_etag:
+                headers["If-None-Match"] = cached_etag
+            resp = requests.get(url, timeout=10, headers=headers)
+            if resp.status_code == 304:
+                cached_tag = getattr(self, cache_tag_attr, "") or ""
+                cached_url = getattr(self, cache_url_attr, "") or ""
+                if cached_tag and cached_url:
+                    return cached_tag, cached_url
+                # 304 without a cached payload is a server contract violation;
+                # clear the stored ETag so we don't send it on the re-fetch
+                # or on future calls.
+                setattr(self, etag_attr, "")
+                try:
+                    del headers["If-None-Match"]
+                except KeyError:
+                    pass
+                resp = requests.get(url, timeout=10, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, dict):
                 return None, None
             tag = data.get("tag_name") or ""
-            url = data.get("html_url") or RELEASES_PAGE
-            return tag, url
+            safe = self._safe_url(data.get("html_url"), fallback_page)
+            if tag and safe:
+                new_etag = resp.headers.get("ETag", "") or ""
+                setattr(self, etag_attr, new_etag)
+                setattr(self, cache_tag_attr, tag)
+                setattr(self, cache_url_attr, safe)
+            return tag, safe
         except Exception:
-            LOG.debug("Update check request failed", exc_info=True)
+            LOG.debug("%s release check failed", log_label, exc_info=True)
             return None, None
 
+    @staticmethod
+    def _safe_url(value, fallback):
+        """Coerce an untrusted URL field to an http(s) string; else fallback.
+
+        GitHub occasionally returns null or unexpected types in release JSON;
+        we must not feed a list, dict, or non-string into webbrowser.open()."""
+        if not isinstance(value, str) or not value:
+            return fallback
+        if not value.startswith(("http://", "https://")):
+            return fallback
+        return value
+
     def _update_check_worker(self, notify_on_failure):
-        # Tests set this env var so they never touch the network.
+        # Tests set this env var so they never phone home.
         if os.environ.get("DNSCRYPT_GUI_SKIP_UPDATE_CHECK"):
+            self._post_ui(lambda: self._re_enable_update_button(notify_on_failure, skipped=True))
             return
-        tag, url = self._fetch_latest_release()
+        # Two independent checks; each owns its own result label.
+        gui_tag, gui_url = self._fetch_latest_release()
+        engine_tag, engine_url = self._fetch_latest_engine_release()
 
         def done():
             try:
-                self._apply_update_result(tag, url, notify_on_failure)
+                self._apply_update_result(gui_tag, gui_url, notify_on_failure)
+                self._apply_engine_update_result(engine_tag, engine_url, notify_on_failure)
             finally:
-                button = getattr(self, "check_updates_button", None)
-                if button is not None:
-                    try:
-                        button.state(["!disabled"])
-                    except tk.TclError:
-                        pass
+                self._re_enable_update_button(notify_on_failure)
+            self._save_release_settings()
 
         self._post_ui(done)
 
+    def _re_enable_update_button(self, notify_on_failure, skipped=False):
+        button = getattr(self, "check_updates_button", None)
+        if button is not None:
+            try:
+                button.state(["!disabled"])
+            except tk.TclError:
+                pass
+        if skipped and notify_on_failure:
+            self.status_var.set("Update check skipped (test mode).")
+
+    def _apply_cached_release_hints(self):
+        """Apply release hints persisted from the previous session.
+
+        Called synchronously on startup so the Configuration tab shows meaningful
+        labels before the background network check completes. No-op if no cache
+        was persisted (first run or offline shutdown)."""
+        gui_tag = getattr(self, "_gui_cached_release_tag", "") or ""
+        gui_url = getattr(self, "_gui_cached_release_url", "") or ""
+        engine_tag = getattr(self, "_engine_cached_release_tag", "") or ""
+        engine_url = getattr(self, "_engine_cached_release_url", "") or ""
+        if gui_tag:
+            self._apply_update_result(gui_tag, gui_url, notify_on_failure=False)
+        if engine_tag:
+            self._apply_engine_update_result(engine_tag, engine_url, notify_on_failure=False)
+
+    def _save_release_settings(self):
+        """Update in-memory settings with release check cache.
+
+        Called after each update check. A failed network check that returned
+        (None, None) does NOT overwrite previously cached values — the
+        instance attributes still hold the last successful result. Only non-None
+        values are written so a stale cache is never accidentally cleared."""
+        if getattr(self, "is_exiting", False) or not getattr(self, "is_initialized", False):
+            return
+        update = {}
+        # ETag attributes are intentionally always written: an empty ETag means
+        # "no server cache key" and that is valid state we want persisted.
+        for key, attr in [
+            ("gui_release_etag", "_gui_release_etag"),
+            ("engine_release_etag", "_engine_release_etag"),
+        ]:
+            val = getattr(self, attr, None)
+            if val is not None:
+                update[key] = val
+        # Cached payload attributes: a None or empty value means "no successful
+        # fetch this run"; preserving the previous non-empty cache is the
+        # correct behavior on a transient network failure.
+        for key, attr in [
+            ("gui_cached_release_tag", "_gui_cached_release_tag"),
+            ("gui_cached_release_url", "_gui_cached_release_url"),
+            ("gui_update_url", "_update_url"),
+            ("engine_cached_release_tag", "_engine_cached_release_tag"),
+            ("engine_cached_release_url", "_engine_cached_release_url"),
+            ("engine_update_url", "_engine_update_url"),
+        ]:
+            val = getattr(self, attr, None)
+            if val:  # truthy: non-empty string
+                update[key] = val
+        if update:
+            self.settings.update(update)
+
     def _apply_update_result(self, tag, url, notify_on_failure=False):
-        kind, display, _link = self._evaluate_update(tag)
-        label = self.update_status_label
+        kind, display, _link = self._evaluate_update(tag, APP_VERSION)
+        status_label = getattr(self, "update_status_label", None)
+        ver_label = getattr(self, "gui_version_label", None)
+        status_var = getattr(self, "status_var", None)
+        link_fg = self._link_fg()
+        if status_label is None:
+            return
         if kind == "available":
             self._update_url = url or RELEASES_PAGE
-            try:
-                theme_fg = self.style.lookup("TLabel", "foreground")
-                link_fg = "#0b7dda" if self._luminance(theme_fg) < 0.5 else "#0b5cd7"
-                if not theme_fg:
-                    link_fg = "#0b7dda"
-                label.config(text=f"Update available: {display}",
-                             foreground=link_fg, cursor="hand2")
-            except tk.TclError:
-                label.config(text=f"Update available: {display}")
-            self.status_var.set(
-                f"Update available: {display} - click the version line to open the release page.")
+            self._render_status_label(
+                status_label, ver_label,
+                available_text=f"→ v{display} available",
+                link_fg=link_fg,
+            )
+            if status_var is not None:
+                status_var.set(
+                    f"GUI update available: v{display} - click the version line to open the release page.")
         elif kind == "current":
             self._update_url = None
-            label.config(text=f"Version {APP_VERSION} - up to date",
-                         cursor="arrow")
-            if notify_on_failure:
-                self.status_var.set(f"You are running the latest version ({APP_VERSION}).")
+            self._render_status_label(
+                status_label, ver_label,
+                current_text="up to date",
+                link_fg="",
+            )
+            if notify_on_failure and status_var is not None:
+                status_var.set(f"GUI is up to date (v{APP_VERSION}).")
         else:
             self._update_url = None
-            label.config(text=f"Version {APP_VERSION}", cursor="arrow")
-            message = "Could not determine the latest version."
-            if notify_on_failure:
-                self.status_var.set(f"Update check failed. {message}")
-            LOG.debug("Update check inconclusive (tag=%r)", tag)
+            self._render_status_label(
+                status_label, ver_label,
+                failed_text="check failed",
+            )
+            if notify_on_failure and status_var is not None:
+                status_var.set("Could not determine the latest GUI version.")
+            LOG.debug("GUI update check inconclusive (tag=%r)", tag)
+
+    def _link_fg(self):
+        try:
+            theme_fg = self.style.lookup("TLabel", "foreground")
+        except (AttributeError, tk.TclError):
+            return "#0b7dda"
+        if not theme_fg:
+            return "#0b7dda"
+        return "#0b7dda" if self._luminance(theme_fg) < 0.5 else "#0b5cd7"
+
+    @staticmethod
+    def _render_status_label(status_label, version_label, *,
+                              available_text=None, current_text=None,
+                              failed_text=None, link_fg=""):
+        """Render the GUI update row: a small status label plus an optional
+        adjacent version label that also becomes clickable when an update
+        is available. Tolerant of dead Tk handles (TclError swallowed)."""
+        if available_text is not None:
+            try:
+                status_label.config(text=available_text, foreground=link_fg, cursor="hand2")
+            except tk.TclError:
+                try:
+                    status_label.config(text=available_text)
+                except tk.TclError:
+                    pass  # widget gone
+            if version_label is not None:
+                try:
+                    version_label.config(foreground=link_fg, cursor="hand2")
+                except tk.TclError:
+                    pass
+        elif current_text is not None:
+            try:
+                status_label.config(text=current_text, foreground="", cursor="arrow")
+            except tk.TclError:
+                try:
+                    status_label.config(text=current_text, cursor="arrow")
+                except tk.TclError:
+                    pass
+            if version_label is not None:
+                try:
+                    version_label.config(foreground="", cursor="arrow")
+                except tk.TclError:
+                    pass
+        elif failed_text is not None:
+            try:
+                status_label.config(text=failed_text, foreground="gray", cursor="arrow")
+            except tk.TclError:
+                try:
+                    status_label.config(text=failed_text, cursor="arrow")
+                except tk.TclError:
+                    pass
+            if version_label is not None:
+                try:
+                    version_label.config(foreground="", cursor="arrow")
+                except tk.TclError:
+                    pass
+
+    def _apply_engine_update_result(self, tag, url, notify_on_failure=False):
+        """Apply the result of the engine release check to the engine_version_label.
+
+        The label is updated immediately when an upstream tag is available, even if
+        the version probe has not yet succeeded — the user sees the hint as early
+        as possible. If the probe has not run yet the label shows the upstream
+        version directly (e.g. "v2.1.18 available")."""
+        self._engine_release_tag = tag
+        self._engine_release_url = url
+        # Store the URL so the engine version label can be clicked to open the
+        # releases page. Only overwrite with a fresh result; a failed check
+        # must not discard a previously cached specific release URL.
+        if tag:
+            self._engine_update_url = url or ENGINE_RELEASES_PAGE
+        label = getattr(self, "engine_version_label", None)
+        if label is None:
+            return
+        try:
+            current = getattr(self, "engine_version", "") or ""
+            kind, display, _link = self._evaluate_update(tag, current)
+            link_fg = self._link_fg()
+            if kind == "available":
+                text = f"{current} → {display} available" if current else f"v{display} available"
+                try:
+                    label.config(text=text, foreground=link_fg, cursor="hand2")
+                except tk.TclError:
+                    label.config(text=text)
+            elif kind == "current" and current:
+                try:
+                    label.config(text=current, foreground="", cursor="arrow")
+                except tk.TclError:
+                    label.config(text=current, cursor="arrow")
+            elif kind == "invalid" and not current and tag and display:
+                # Probe has not completed yet but we have a valid upstream tag:
+                # show the hint immediately so the user does not see
+                # "(probing...)" for several seconds. This is the common
+                # startup path when the cached hint is applied before the
+                # version probe finishes.
+                try:
+                    label.config(text=f"v{display} available",
+                                 foreground=link_fg, cursor="hand2")
+                except tk.TclError:
+                    label.config(text=f"v{display} available")
+            # else: API failure with a working engine — keep the label as-is.
+        except tk.TclError:
+            pass
 
     def manual_update_check(self):
         button = getattr(self, "check_updates_button", None)
@@ -1288,12 +1844,22 @@ class DNSCryptClientGUI:
                          daemon=True, name="update-check").start()
 
     def _open_update_link(self, event=None):
-        if getattr(self, "_update_url", None):
+        url = getattr(self, "_update_url", None)
+        if url:
             try:
                 import webbrowser
-                webbrowser.open(self._update_url)
+                webbrowser.open(url)
             except Exception:
                 LOG.debug("Could not open update URL", exc_info=True)
+
+    def _open_engine_update_link(self, event=None):
+        url = getattr(self, "_engine_update_url", None)
+        if url:
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                LOG.debug("Could not open engine update URL", exc_info=True)
 
     def toggle_activation(self):
         if self.active_server_info:
@@ -1325,17 +1891,17 @@ class DNSCryptClientGUI:
         self.save_settings()
         if self.active_server_info:
             def task():
-                # Acquire and release on the same thread; a busy lock is
-                # reported instead of silently dropping the change.
                 if not self.action_lock.acquire(blocking=False):
                     self._post_ui(lambda: self.status_var.set(
-                        "Busy - configuration change will need to be re-applied."))
+                        "Busy - the current operation has not finished yet."))
                     return
                 try:
-                    self._post_ui(lambda: self.status_var.set("Configuration changed. Restarting proxy..."))
-                    current_servers = self.active_server_info
+                    self._post_ui(lambda: self.restart_button.config(state=tk.DISABLED, text="Restarting..."))
+                    self._post_ui(lambda: self.status_var.set("Restarting proxy..."))
+                    current_servers = list(self.active_server_info)
                     self.deactivate_dns()
-                    if not self.active_server_info: self.activate_dns(current_servers)
+                    if current_servers:
+                        self.activate_dns(current_servers)
                 finally:
                     self.action_lock.release()
             threading.Thread(target=task, daemon=True).start()
@@ -1414,6 +1980,24 @@ class DNSCryptClientGUI:
         return clean if clean else "server"
 
     @staticmethod
+    def _toml_literal_escape(value):
+        """Escape a string for embedding in a TOML single-quoted literal.
+
+        TOML literal strings cannot contain unescaped backslashes or single
+        quotes. The two characters that need escaping are `\\` and `'`; every
+        other byte is passed through unchanged. Control characters (U+0000-
+        U+0008, U+000A-0x001F) are rejected with a ValueError to surface
+        upstream data corruption instead of silently producing invalid TOML.
+        """
+        if not isinstance(value, str):
+            value = str(value)
+        if any(ord(c) < 0x20 for c in value):
+            raise ValueError(
+                f"Refusing to embed control character in TOML literal: {value!r}"
+            )
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
     def _coerce_int(raw, default, lo, hi):
         """Clamp user input into a safe integer range."""
         try:
@@ -1433,7 +2017,13 @@ class DNSCryptClientGUI:
     def _snapshot_generation_settings(self):
         """Read Tk-bound settings on the main thread; callable from any
         thread. Returns plain values so worker threads never touch the Tcl
-        interpreter (which raises 'main thread is not in main loop')."""
+        interpreter (which raises 'main thread is not in main loop').
+
+        A 1-second timeout is used (the operation is purely in-process - the
+        UI just needs to process a single event). If the main thread is busy
+        (e.g. modal dialog or a long-running handler), fall back to the most
+        recently saved values in self.settings so the caller is never stuck
+        for an unbounded time."""
         done = threading.Event()
         holder = {}
 
@@ -1455,7 +2045,21 @@ class DNSCryptClientGUI:
                 done.set()
 
         self._post_ui(grab)
-        done.wait(timeout=10)
+        if not done.wait(timeout=1.0):
+            # Main thread is unresponsive - use the most recently persisted
+            # values. They are always slightly stale relative to the UI but
+            # they are consistent with the last user-initiated save.
+            LOG.debug("Tk snapshot timed out; using persisted settings")
+            return {
+                "config_dir": self.settings.get("config_dir", ""),
+                "cache_size": self.settings.get("cache_size", "512"),
+                "cache_min_ttl": self.settings.get("cache_min_ttl", "60"),
+                "cache_neg_ttl": self.settings.get("cache_neg_ttl", "60"),
+                "block_ipv6": self.settings.get("block_ipv6", False),
+                "require_dnssec": self.settings.get("require_dnssec", False),
+                "require_nolog": self.settings.get("require_nolog", False),
+                "require_nofilter": self.settings.get("require_nofilter", False),
+            }
         return holder.get("value") or {}
 
     def _generate_config_content(self, server_list, settings=None):
@@ -1536,7 +2140,10 @@ class DNSCryptClientGUI:
         
         for safe_name in safe_server_names:
             server_info = name_map[safe_name]
-            config_lines.extend([f"\n[static.'{safe_name}']", f"stamp = '{server_info['stamp']}'"])
+            config_lines.extend([
+                f"\n[static.'{safe_name}']",
+                f"stamp = '{self._toml_literal_escape(server_info['stamp'])}'"
+            ])
             
             relay_list = self.server_relay_map.get(server_info['name'])
             if isinstance(relay_list, str): relay_list = [relay_list] if relay_list else []
@@ -1571,7 +2178,7 @@ class DNSCryptClientGUI:
                 safe_relay_name = relay_safe_names[original_name]
                 config_lines.extend([
                     f"\n[static.'{safe_relay_name}']",
-                    f"stamp = '{known_relay_stamps[original_name]}'"
+                    f"stamp = '{self._toml_literal_escape(known_relay_stamps[original_name])}'"
                 ])
 
         if anonymized_routes:
@@ -1724,14 +2331,70 @@ class DNSCryptClientGUI:
             _stop_proxy()
             os._exit(0)
 
+    def _structured_log(self, event, **kwargs):
+        """Log a structured event with event name and metadata.
+
+        Structured logs enable log aggregation tools (Sentry, CloudWatch, etc.)
+        to query, filter, and correlate events across log streams.
+
+        kwargs values that are not str / int / float / bool are passed through
+        repr() so the log line never raises TypeError and remains readable."""
+        if kwargs:
+            safe = {
+                k: (v if isinstance(v, (str, int, float, bool)) else repr(v))
+                for k, v in kwargs.items()
+            }
+            message = f"{event} {safe}"
+        else:
+            message = event
+        LOG.info(message)
+
+    def _log_dns_activation_start(self, server_count):
+        self._structured_log("dns_activation_start", server_count=server_count)
+
+    def _log_dns_activation_success(self, server_count, duration_s):
+        self._structured_log(
+            "dns_activation_success",
+            server_count=server_count,
+            duration_s=round(duration_s, 3),
+        )
+
+    def _log_dns_activation_failure(self, server_count, reason):
+        self._structured_log(
+            "dns_activation_failure",
+            server_count=server_count,
+            reason=reason,
+        )
+
+    def _log_dns_deactivation_start(self):
+        self._structured_log("dns_deactivation_start")
+
+    def _log_dns_deactivation_success(self):
+        self._structured_log("dns_deactivation_success")
+
     def activate_dns(self, server_list):
         def update_ui(key, value):
-            self._post_ui(lambda: self.status_var.set(value) if key == 'status' else None)
-            if key == 'disable_button': self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
+            if key == 'status':
+                self._post_ui(lambda v=value: self.status_var.set(v))
+            elif key == 'disable_button':
+                # Both buttons disable together so a concurrent Restart click
+                # cannot race with a fresh activation. Captured by the same
+                # closure so the UI state changes are atomic from the main
+                # loop's perspective.
+                self._post_ui(lambda: (
+                    self.activate_button.config(state=tk.DISABLED),
+                    self.restart_button.config(state=tk.DISABLED),
+                ))
 
         update_ui('status', f"Activating {len(server_list)} servers...")
         update_ui('disable_button', True)
-
+        # Log the activation start before any state mutation so log consumers
+        # see the intent to activate, even if a later step crashes.
+        self._log_dns_activation_start(len(server_list))
+        # Claim the active slot immediately so callers see a consistent answer
+        # even if a later step fails. The slot is only confirmed in final_success_ui.
+        self.active_server_info = []
+        _t0 = time.monotonic()
         try:
             settings = self._snapshot_generation_settings()
             config_dir = settings.get("config_dir", "") or self.base_path
@@ -1783,6 +2446,8 @@ class DNSCryptClientGUI:
             self._post_ui(lambda t=err_text: messagebox.showerror("Proxy Start Error", t))
             self.stop_proxy_only()
             self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
+            self._post_ui(lambda: self.restart_button.config(state=tk.NORMAL, text="Restart Proxy"))
+            self._log_dns_activation_failure(len(server_list), str(e))
             return
 
         try:
@@ -1796,6 +2461,8 @@ class DNSCryptClientGUI:
                 f"could not be captured for a safe restore.\n\n{err_text}"))
             self.stop_proxy_only()
             self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
+            self._post_ui(lambda: self.restart_button.config(state=tk.NORMAL, text="Restart Proxy"))
+            self._log_dns_activation_failure(len(server_list), "backup_failed")
             return
 
         success = False
@@ -1806,15 +2473,20 @@ class DNSCryptClientGUI:
              time.sleep(1)
 
         if not success:
-             update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
-             self._revert_after_restore_attempt()
-             self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
-             return
-        
+            update_ui('status', "Failed to set system DNS."); self.stop_proxy_only()
+            self._revert_after_restore_attempt()
+            self._post_ui(lambda: self.activate_button.config(state=tk.NORMAL))
+            self._post_ui(lambda: self.restart_button.config(state=tk.NORMAL, text="Restart Proxy"))
+            self._log_dns_activation_failure(len(server_list), "set_system_dns_failed")
+            return
+
         def final_success_ui():
+            duration = time.monotonic() - _t0
+            self._log_dns_activation_success(len(server_list), duration)
             self.active_server_info = server_list
             self.preferred_servers = [s['name'] for s in server_list]
             self.activate_button.config(text="Deactivate", state=tk.NORMAL)
+            self.restart_button.config(state=tk.NORMAL, text="Restart Proxy")
             self.status_indicator.config(text="STATUS: ACTIVE", style="Active.TLabel")
             self.active_server_label.config(text=f"Active: {len(server_list)} servers")
             self.status_var.set(f"Successfully activated {len(server_list)} servers.")
@@ -1823,14 +2495,11 @@ class DNSCryptClientGUI:
         self._post_ui(final_success_ui)
 
     def deactivate_dns(self):
+        self._log_dns_deactivation_start()
         self._post_ui(lambda: self.status_var.set("Deactivating..."))
         self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
 
-        # Authoritative state flips synchronously: callers on worker threads
-        # (e.g. the config-restart flow) check this flag immediately after
-        # this method returns, long before the queued UI reset runs.
-        self.active_server_info = []
-
+        # Stop the proxy first so it stops intercepting DNS queries.
         if self.proxy_process:
             self.proxy_process.terminate()
             try:
@@ -1839,18 +2508,36 @@ class DNSCryptClientGUI:
                 self.proxy_process.kill()
             self.proxy_process = None
 
+        # Join the drain thread before DNS restore so stderr is fully closed
+        # before we touch the system DNS settings.
+        drain = getattr(self, "_proxy_log_thread", None)
+        if drain:
+            drain.join(timeout=1.0)
+            self._proxy_log_thread = None
+
         # Exact restoration of the user's previous DNS configuration; the
         # reset-to-DHCP path is only a last resort when no backup exists.
         self._revert_after_restore_attempt()
 
+        # Now that DNS is restored (or reset), flip the authoritative state.
+        # This must happen after DNS restore so that a failed restore can still
+        # be retried: callers on worker threads check active_server_info to
+        # decide whether retry is needed.
+        self.active_server_info = []
+
         def final_ui_reset():
             self.activate_button.config(text="Activate Selected Server(s)", state=tk.NORMAL if self.tree.selection() else tk.DISABLED)
+            self.restart_button.config(state=tk.DISABLED)
             self.status_indicator.config(text="STATUS: INACTIVE", style="Inactive.TLabel")
             self.active_server_label.config(text="No server active.")
             self.status_var.set("Deactivated. System DNS restored.")
             self.save_settings()
 
         self._post_ui(final_ui_reset)
+        # Log while still inside the action_lock critical section, before
+        # the lock is released, so activation/deactivation events are atomic
+        # with their respective state transitions.
+        self._log_dns_deactivation_success()
 
     def set_system_dns(self, dns_server):
         try:
@@ -1859,7 +2546,17 @@ class DNSCryptClientGUI:
                 self._run_hidden(cmd)
             elif platform.system() == "Darwin":
                 for service in self._list_mac_services():
-                    subprocess.run(['networksetup', '-setdnsservers', service, dns_server], check=False, capture_output=True, **self._get_hidden_subprocess_args())
+                    result = subprocess.run(
+                        ['networksetup', '-setdnsservers', service, dns_server],
+                        check=False, capture_output=True,
+                        **self._get_hidden_subprocess_args()
+                    )
+                    if result.returncode != 0:
+                        LOG.warning(
+                            "networksetup failed for service %r (rc=%d): %s",
+                            service, result.returncode, result.stderr.decode(errors="replace")
+                        )
+                        return False
             elif platform.system() == "Linux":
                 with open("/etc/resolv.conf", "w") as f: f.write(f"nameserver {dns_server}\n")
             return True
@@ -1878,7 +2575,16 @@ class DNSCryptClientGUI:
                  self._run_hidden(cmd)
             elif platform.system() == "Darwin":
                 for service in self._list_mac_services():
-                    subprocess.run(['networksetup', '-setdnsservers', service, 'empty'], check=False, capture_output=True, **self._get_hidden_subprocess_args())
+                    result = subprocess.run(
+                        ['networksetup', '-setdnsservers', service, 'empty'],
+                        check=False, capture_output=True,
+                        **self._get_hidden_subprocess_args()
+                    )
+                    if result.returncode != 0:
+                        LOG.warning(
+                            "networksetup revert failed for %r (rc=%d): %s",
+                            service, result.returncode, result.stderr.decode(errors="replace")
+                        )
             elif platform.system() == "Linux":
                 if os.path.exists("/etc/resolv.conf"): os.remove("/etc/resolv.conf")
                 if os.path.exists('/run/systemd/resolve/stub-resolv.conf'):
@@ -1888,6 +2594,9 @@ class DNSCryptClientGUI:
 
     def cleanup(self):
         self.is_exiting = True
+        # Stop the file watcher so its poll loop exits promptly.
+        if getattr(self, "_settings_watcher_stop", None) is not None:
+            self._settings_watcher_stop.set()
         if self.active_server_info:
             self.stop_proxy_only()
             self._revert_after_restore_attempt()
@@ -1895,26 +2604,38 @@ class DNSCryptClientGUI:
     def _revert_after_restore_attempt(self):
         """Restore the exact backup; reset-to-DHCP only as a true last resort.
 
-        A PARTIAL restore keeps dns_backup.json on disk for a manual retry,
-        so the DHCP reset must not fire in that case - it would destroy
-        whatever custom settings were about to be recovered."""
-        if not self.restore_dns_backup() and not os.path.exists(self.dns_backup_file):
-            self.revert_system_dns()
+        A PARTIAL restore (some adapters restored, some failed) keeps
+        dns_backup.json on disk so the user can retry. A COMPLETE failure
+        due to a corrupt backup file falls through to the DHCP reset so the
+        system is never left with DNS pointing at a non-existent proxy."""
+        result = self.restore_dns_backup()
+        if result is True:
+            return
+        if result is False:
+            # Partial restore failure or corrupt JSON / wrong platform — fall
+            # through to DHCP reset only if there is no valid backup on disk.
+            if os.path.exists(self.dns_backup_file):
+                # A partial failure exists but the backup is still there —
+                # caller is responsible for retry. Do NOT fall through.
+                return
+        # result is None (no file) or result is False with no backup file:
+        # no retry possible — fall through to DHCP reset.
+        self.revert_system_dns()
 
     def start_fetch(self):
         threading.Thread(target=self._prepare_and_fetch, daemon=True).start()
 
     def _prepare_and_fetch(self):
+        # Quick UI disable under lock; network I/O happens without lock.
         with self.action_lock:
             self._post_ui(lambda: self.fetch_button.config(state=tk.DISABLED))
             self._post_ui(lambda: self.bridge_button.config(state=tk.DISABLED))
-            
             if not self.server_data:
                 self._post_ui(lambda: self.activate_button.config(state=tk.DISABLED))
                 self._post_ui(lambda: self.tree.delete(*self.tree.get_children()))
-                
             self._post_ui(lambda: self.status_var.set("Fetching server and relay lists..."))
-            self._fetch_and_parse_servers()
+        # Network I/O without holding the lock.
+        self._fetch_and_parse_servers()
 
     def _parse_markdown_list(self, text):
         data = []
@@ -1963,7 +2684,12 @@ class DNSCryptClientGUI:
                 resp_rel.raise_for_status()
             
             for server in self.server_data:
-                server['proto_type'] = "DNSCrypt" if server['stamp'].startswith("sdns://AQ") else ("DoH" if server['stamp'].startswith("sdns://Ag") else "Other")
+                stamp = server.get('stamp', '')
+                if not stamp:
+                    LOG.warning("Server %r has no stamp; skipping proto_type assignment", server.get('name', '(unknown)'))
+                    server['proto_type'] = "Other"
+                    continue
+                server['proto_type'] = "DNSCrypt" if stamp.startswith("sdns://AQ") else ("DoH" if stamp.startswith("sdns://Ag") else "Other")
                 desc_lower = server['description'].lower(); props = []
                 for prop in ['no-log', 'dnssec', 'no-filter']:
                     keywords = [prop, prop.replace('-', ' ')]; 
@@ -2029,8 +2755,13 @@ class DNSCryptClientGUI:
             self.status_var.set("Previous servers not found in current list.")
     
     def _activation_worker_direct(self, servers):
-        with self.action_lock:
-             self.activate_dns(servers)
+        try:
+            with self.action_lock:
+                self.activate_dns(servers)
+        finally:
+            # If activation didn't succeed (no active servers), allow retry.
+            if not self.active_server_info:
+                self._auto_activation_started = False
 
     def on_server_select(self, event):
         selected_items = self.tree.selection()
@@ -2091,14 +2822,17 @@ if __name__ == "__main__":
         try:
             if platform.system() == "Windows":
                 import ctypes
-                params = " ".join([f'"{arg}"' for arg in sys.argv])
+                # subprocess.list2cmdline is the platform-correct quoting
+                # for CommandLineToArgvW; a hand-rolled " ".join(f'"{a}"')
+                # breaks on arguments that already contain quotes.
+                params = subprocess.list2cmdline(sys.argv)
                 rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
                 if rc <= 32:
                     # Elevation was declined or failed (e.g. UAC cancelled).
                     LOG.warning("Elevation declined/failed (ShellExecuteW rc=%s)", rc)
                     _warn_elevation_required()
             else:
-                os.execvp('sudo', ['sudo', sys.executable] + sys.argv)
+                os.execvp('sudo', ['sudo', sys.executable, *sys.argv])
         except Exception:
             LOG.error("Elevation request failed", exc_info=True)
         sys.exit(0)

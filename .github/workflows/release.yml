@@ -19,16 +19,25 @@ concurrency:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
-        # Linux builds on 22.04 on purpose: the bundled glibc (2.35) keeps the
-        # executable compatible with older distributions.
-        os: [ubuntu-22.04, macos-latest, windows-latest]
+        # Linux x86_64 builds on 22.04 on purpose: the bundled glibc (2.35)
+        # keeps the executable compatible with older distributions. ARM uses
+        # 24.04 (no older arm64 image with the glibc range we need is still
+        # on the runner catalog; 24.04 ships glibc 2.39, still well within
+        # mainstream distribution support).
+        include:
+          - { os: ubuntu-22.04,    label: Linux x86_64,  asset: linux_x86_64,  ext: tar.gz }
+          - { os: ubuntu-24.04-arm, label: Linux arm64,  asset: linux_arm64,  ext: tar.gz }
+          - { os: macos-latest,   label: macOS arm64,  asset: macos_arm64,  ext: zip }
+          - { os: windows-latest, label: Windows x64,  asset: win64,        ext: zip }
+          - { os: windows-11-arm, label: Windows ARM,  asset: winarm,       ext: zip }
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,22 +64,156 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install System Dependencies (Linux)
-        if: matrix.os == 'ubuntu-22.04'
+      - name: Install System Dependencies + minisign (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk
+          sudo apt-get install -y python3-tk minisign
+
+      - name: Install minisign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install minisign
+
+      - name: Install minisign (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # GitHub Actions Windows runners include Git Bash, but PATH changes made
+          # in PowerShell steps don't automatically propagate to Git Bash shells.
+          # Install directly into a directory Git Bash already has on PATH so both
+          # PowerShell and bash invocations of `minisign` resolve correctly.
+          $ErrorActionPreference = 'Stop'
+          $msZip = "$env:TEMP\minisign-win64.zip"
+          Invoke-WebRequest -UseBasicParsing -MaximumTime 60 -OutFile $msZip `
+            'https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-win64.zip'
+          Expand-Archive -Force -Path $msZip -DestinationPath "$env:TEMP\minisign"
+          $exe = Get-ChildItem -Path "$env:TEMP\minisign" -Filter 'minisign.exe' -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "minisign.exe not found in extracted archive" }
+          # Git Bash on Windows has C:/Windows/System32 on its PATH by default.
+          $installDir = 'C:\Windows\System32'
+          Copy-Item -LiteralPath $exe.FullName -Destination "$installDir\minisign.exe" -Force
+          minisign -v 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "minisign not callable after install to $installDir" }
+          echo "minisign installed to $installDir"
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt "pyinstaller==6.22.2"
 
+      - name: Download upstream dnscrypt-proxy
+        id: engine
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Resolve the latest upstream release tag (independent of GUI version).
+          ENGINE_VERSION=$(python3 -c "
+            import json, urllib.request, os
+            url = 'https://api.github.com/repos/DNSCrypt/dnscrypt-proxy/releases/latest'
+            headers = {}
+            if os.environ.get('GH_TOKEN'):
+                headers['Authorization'] = 'Bearer ' + os.environ['GH_TOKEN']
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            tag = data.get('tag_name', '')
+            if not tag:
+                raise SystemExit('No tag_name in release response')
+            print(tag)
+          ")
+          if [ -z "${ENGINE_VERSION:-}" ]; then
+            echo "::error::Could not determine latest dnscrypt-proxy release."
+            exit 1
+          fi
+          echo "engine_version=${ENGINE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved upstream dnscrypt-proxy ${ENGINE_VERSION}."
+
+          ENGINE_ASSET="dnscrypt-proxy-${{ matrix.asset }}-${ENGINE_VERSION}.${{ matrix.ext }}"
+          # Per-OS directory suffix so parallel matrix jobs don't overwrite each
+          # other in a shared runner (workflows share a workspace only across
+          # separate steps within a single matrix entry, but the suffix also
+          # keeps the produced artifact predictable).
+          ENGINE_DIR_SUFFIX="${{ matrix.asset }}-${{ matrix.os }}"
+          ENGINE_BASE="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${ENGINE_VERSION}"
+          ARCHIVE_PATH="engine-${ENGINE_VERSION}.${{ matrix.ext }}"
+          MINISIG_PATH="${ARCHIVE_PATH}.minisig"
+          echo "engine_asset=${ENGINE_ASSET}" >> "$GITHUB_OUTPUT"
+          echo "engine_dir_suffix=${ENGINE_DIR_SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "engine_archive_path=${ARCHIVE_PATH}" >> "$GITHUB_OUTPUT"
+          curl -fsSL --max-time 120 -o "${ARCHIVE_PATH}" "${ENGINE_BASE}/${ENGINE_ASSET}"
+          curl -fsSL --max-time 30 -o "${MINISIG_PATH}" "${ENGINE_BASE}/${ENGINE_ASSET}.minisig"
+          echo "Downloaded ${ARCHIVE_PATH} and ${MINISIG_PATH}"
+
+      - name: Verify upstream minisig signature (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          # Frank Denis' public key, pinned and verified out-of-band via the
+          # DNSCrypt wiki (https://github.com/DNSCrypt/dnscrypt-proxy/wiki/Installation).
+          # Also retrievable via DNSSEC: dig txt dnscrypt-proxy.key.dnscrypt.info.
+          MINISIG_PUBKEY: RWTk1xXqcTODeYttYMCMLo0YJHaFEHn7a3akqHlb/7QvIQXHVPxKbjB5
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="${{ steps.engine.outputs.engine_archive_path }}"
+          MINISIG_PATH="${ARCHIVE_PATH}.minisig"
+          if [ ! -f "${MINISIG_PATH}" ]; then
+            echo "::error::minisig file not found; cannot verify engine"
+            exit 1
+          fi
+          if ! minisign -V -p "$MINISIG_PUBKEY" -m "${ARCHIVE_PATH}" -s "${MINISIG_PATH}"; then
+            echo "::error::minisig signature verification FAILED for ${ARCHIVE_PATH}"
+            exit 1
+          fi
+          echo "minisig signature verified OK for ${ARCHIVE_PATH}"
+
+      - name: Verify upstream minisig signature (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MINISIG_PUBKEY: RWTk1xXqcTODeYttYMCMLo0YJHaFEHn7a3akqHlb/7QvIQXHVPxKbjB5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = "${{ github.workspace }}\${{ steps.engine.outputs.engine_archive_path }}"
+          $sig = "$archive.minisig"
+          $pubkey = $env:MINISIG_PUBKEY
+          if (-not (Test-Path $sig)) {
+            throw "minisig file not found at $sig"
+          }
+          $result = & minisign -V -p $pubkey -m $archive -s $sig 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "minisig verification failed for $archive : $result"
+          }
+          Write-Host "minisig signature verified OK for $archive"
+
+      - name: Extract and bundle engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="${{ steps.engine.outputs.engine_archive_path }}"
+          ENGINE_DIR_SUFFIX="${{ steps.engine.outputs.engine_dir_suffix }}"
+          ENGINE_ASSET="${{ steps.engine.outputs.engine_asset }}"
+          mkdir -p "engine/${ENGINE_DIR_SUFFIX}"
+          case "$ENGINE_ASSET" in
+            *.tar.gz) tar -xzf "${ARCHIVE_PATH}" -C "engine/${ENGINE_DIR_SUFFIX}" ;;
+            *.zip)
+              powershell -NoProfile -Command "Expand-Archive -Force -Path '${ARCHIVE_PATH}' -DestinationPath 'engine/${ENGINE_DIR_SUFFIX}'; if (-not \$?) { exit 1 }"
+              ;;
+          esac
+          rm -f "${ARCHIVE_PATH}" "${ARCHIVE_PATH}.minisig"
+          echo "Extracted engine into engine/${ENGINE_DIR_SUFFIX}"
+
       - name: Build Windows Executable
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' || matrix.os == 'windows-11-arm'
         shell: pwsh
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
+          ENGINE_VERSION: ${{ steps.engine.outputs.engine_version }}
+          ENGINE_DIR_SUFFIX: ${{ steps.engine.outputs.engine_dir_suffix }}
+          MATRIX_LABEL: ${{ matrix.label }}
         run: |
           # Version metadata so Explorer shows a proper ProductVersion (#4)
           $maj, $min, $patch = ($env:APP_VERSION.Split('.') + @('0', '0', '0'))[0..2]
@@ -86,32 +229,67 @@ jobs:
             ')'
           ) | Set-Content -Path version.txt -Encoding Ascii
           pyinstaller --noconfirm --onedir --windowed --icon=icon.ico --version-file=version.txt dnscrypt-proxy-gui.PY
-          Compress-Archive -Path "dist\dnscrypt-proxy-gui" -DestinationPath "dnscrypt-proxy-gui-$($env:APP_VERSION)-Windows-x64.zip" -Force
+          $engine = Get-ChildItem -Path "engine\$env:ENGINE_DIR_SUFFIX" -Filter 'dnscrypt-proxy.exe' -Recurse | Select-Object -First 1
+          if (-not $engine) { throw "dnscrypt-proxy.exe not found in engine\$env:ENGINE_DIR_SUFFIX" }
+          Copy-Item -LiteralPath $engine.FullName -Destination "dist\dnscrypt-proxy-gui\dnscrypt-proxy.exe" -Force
+          $exampleToml = Get-ChildItem -Path "engine\$env:ENGINE_DIR_SUFFIX" -Filter 'example-dnscrypt-proxy.toml' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exampleToml) { Copy-Item -LiteralPath $exampleToml.FullName -Destination "dist\dnscrypt-proxy-gui\dnscrypt-proxy-example.toml" -Force }
+          @("Engine: dnscrypt-proxy $env:ENGINE_VERSION", "GUI: v$env:APP_VERSION") | Out-File "dist\dnscrypt-proxy-gui\ENGINE_VERSION.txt" -Encoding UTF8
+          $labelSlug = ($env:MATRIX_LABEL.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+          Compress-Archive -Path "dist\dnscrypt-proxy-gui" -DestinationPath "dnscrypt-proxy-gui-$($env:APP_VERSION)-$($labelSlug).zip" -Force
 
       - name: Build macOS Executable
         if: matrix.os == 'macos-latest'
         shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
+          ENGINE_VERSION: ${{ steps.engine.outputs.engine_version }}
+          ENGINE_DIR_SUFFIX: ${{ steps.engine.outputs.engine_dir_suffix }}
         run: |
+          set -euo pipefail
           pyinstaller --noconfirm --onedir --windowed --icon=icon.icns dnscrypt-proxy-gui.PY
+          APP_RES="dist/dnscrypt-proxy-gui.app/Contents/Resources"
+          mkdir -p "$APP_RES"
+          ENGINE_BIN="$(find "engine/${ENGINE_DIR_SUFFIX}" -type f -name 'dnscrypt-proxy' -executable -not -name '*.sig' -not -name '*.md' | head -n 1)"
+          if [ -z "$ENGINE_BIN" ]; then
+            echo "::error::dnscrypt-proxy binary not found in engine/${ENGINE_DIR_SUFFIX}"
+            exit 1
+          fi
+          cp "$ENGINE_BIN" "$APP_RES/dnscrypt-proxy"
+          chmod +x "$APP_RES/dnscrypt-proxy"
+          cp "engine/${ENGINE_DIR_SUFFIX}/example-dnscrypt-proxy.toml" "$APP_RES/dnscrypt-proxy-example.toml" 2>/dev/null || true
+          echo "Engine: dnscrypt-proxy $ENGINE_VERSION" > "$APP_RES/ENGINE_VERSION.txt"
           cd dist
-          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-macOS.zip" dnscrypt-proxy-gui.app
+          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-macOS-arm64.zip" dnscrypt-proxy-gui.app
 
       - name: Build Linux Executable
-        if: matrix.os == 'ubuntu-22.04'
+        if: runner.os == 'Linux'
         shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
+          ENGINE_VERSION: ${{ steps.engine.outputs.engine_version }}
+          ENGINE_DIR_SUFFIX: ${{ steps.engine.outputs.engine_dir_suffix }}
+          MATRIX_LABEL: ${{ matrix.label }}
         run: |
+          set -euo pipefail
           pyinstaller --noconfirm --onedir --windowed --icon=icon.png dnscrypt-proxy-gui.PY
+          ENGINE_BIN="$(find "engine/${ENGINE_DIR_SUFFIX}" -type f -name 'dnscrypt-proxy' -executable | head -n 1)"
+          if [ -z "$ENGINE_BIN" ]; then
+            echo "::error::dnscrypt-proxy binary not found in engine/${ENGINE_DIR_SUFFIX}"
+            exit 1
+          fi
+          cp "$ENGINE_BIN" dist/dnscrypt-proxy-gui/dnscrypt-proxy
+          chmod +x dist/dnscrypt-proxy-gui/dnscrypt-proxy
+          cp "engine/${ENGINE_DIR_SUFFIX}/example-dnscrypt-proxy.toml" dist/dnscrypt-proxy-gui/dnscrypt-proxy-example.toml 2>/dev/null || true
+          echo "Engine: dnscrypt-proxy $ENGINE_VERSION" > dist/dnscrypt-proxy-gui/ENGINE_VERSION.txt
+          label_slug=$(echo "$MATRIX_LABEL" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
           cd dist
-          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-Linux.zip" dnscrypt-proxy-gui
+          zip -r "../dnscrypt-proxy-gui-$APP_VERSION-${label_slug}.zip" dnscrypt-proxy-gui
 
       - name: Upload Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: build-${{ matrix.os }}
+          name: build-${{ matrix.os }}-${{ matrix.asset }}
           path: |
             *.zip
 
