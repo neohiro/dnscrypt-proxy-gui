@@ -42,14 +42,14 @@ You can either download the pre-compiled standalone executables (Recommended) or
 
 ### 📥 Option 1: Download Standalone Release (Recommended)
 
-We provide high-quality, pre-built executables for Windows, macOS, and Linux. No Python installation required!
+We provide high-quality, pre-built executables for Windows (x64 + ARM), macOS (ARM64), and Linux (x86_64 + ARM64). No Python installation required!
 
 1. Go to the [Releases page](https://github.com/neohiro/dnscrypt-proxy-gui/releases) and download the archive matching your OS and version - e.g. `dnscrypt-proxy-gui-1.2.1-Windows-x64.zip`.
 2. Extract it into **its own dedicated folder** (e.g. `C:\Program Files\dnscrypt-proxy-gui\`, `~/Applications/dnscrypt-proxy-gui/`, or `~/dnscrypt-proxy-gui/`). Never extract the contents loose into `Program Files` itself - the folder contains the app plus its runtime libraries.
-3. **macOS users:** the app is not codesigned, so on first launch right-click the app and choose **Open** (or allow it in *System Settings → Privacy & Security*). Also grab the official `dnscrypt-proxy` binary from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases) and keep it beside the app (or set its path in Configuration → System Paths).
-4. **Important:** Download the official `dnscrypt-proxy` executable for your OS from the [DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
-4. Place the `dnscrypt-proxy` executable (e.g., `dnscrypt-proxy.exe` on Windows) **in the same folder** as the GUI executable.
-5. Run the GUI executable. (It will automatically request administrator/sudo privileges).
+3. **macOS users:** the app is not codesigned, so on first launch right-click the app and choose **Open** (or allow it in *System Settings → Privacy & Security*).
+4. Run the GUI executable. (It will automatically request administrator/sudo privileges).
+
+> The release archive ships a **bundled, latest-stable `dnscrypt-proxy` engine** inside the app folder (or `.app/Contents/Resources` on macOS), so you can activate encrypted DNS the very first time the GUI starts — no separate download, no extra setup. The GUI discovers engines in this order: 1. your custom path (if set in Configuration), 2. a system install found on `PATH`, 3. the bundled copy. Your existing install is always respected; the bundled engine is the safety net. Both the **GUI version** and the **engine version** are displayed in the **Updates** section on the Configuration tab, alongside an update check button. Available updates for either component are highlighted in blue. The build system also records the engine version in `ENGINE_VERSION.txt` inside the archive for reference.
 
 ---
 
@@ -62,8 +62,7 @@ If you prefer to run the Python script directly, follow these steps:
   - **Debian/Ubuntu**: also install the GUI toolkit with `sudo apt install python3-tk`
   - **Fedora**: `sudo dnf install python3-tkinter`
   - **Arch**: tk is bundled with the `tk` package (`sudo pacman -S tk`)
-- **dnscrypt-proxy**: Download the latest version for your OS from the [official DNSCrypt releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
-  - On Linux it is usually available from your distro's repositories (`sudo apt install dnscrypt-proxy`) - the GUI will find it at `/usr/bin/dnscrypt-proxy` by default.
+- **dnscrypt-proxy**: The GUI auto-discovers it: 1) a system install found on `PATH`, 2) a binary placed next to the script, or 3) (if using a release build) the bundled copy. On Linux, install it from your distro repositories (`sudo apt install dnscrypt-proxy`) or download from the [official releases page](https://github.com/DNSCrypt/dnscrypt-proxy/releases).
 
 #### 2. Get the Code
 Clone this repository or download the source code:
@@ -117,15 +116,21 @@ python3 dnscrypt-proxy-gui.PY
 
 ### System Paths (Linux / macOS)
 
-By default the GUI looks for:
+The GUI auto-discovers the engine in this order:
+
+1. **Custom path** — anything you set in *Configuration → System Paths* (persisted in `settings.json`).
+2. **System install** — `dnscrypt-proxy` on `$PATH` (e.g. `/usr/bin/dnscrypt-proxy` on Linux, `/usr/local/bin/dnscrypt-proxy` on macOS). On Windows it must be reachable via `PATH`; if it isn't, set a custom path.
+3. **Bundled engine** — the binary shipped with the release archive (next to the GUI on Linux/Windows, in `.app/Contents/Resources` on macOS).
 
 | What | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| `dnscrypt-proxy` executable | next to the GUI | `/usr/bin/dnscrypt-proxy` or on `$PATH` | `/usr/local/bin/dnscrypt-proxy` or on `$PATH` |
-| Configuration folder | next to the GUI | `/etc/dnscrypt-proxy` | `/usr/local/etc/dnscrypt-proxy` |
+| `dnscrypt-proxy` executable (system) | on `PATH` | `/usr/bin/dnscrypt-proxy` or on `$PATH` | `/usr/local/bin/dnscrypt-proxy` or on `$PATH` |
+| `dnscrypt-proxy` executable (bundled) | next to the GUI | next to the GUI | inside `.app/Contents/Resources` |
+| Configuration folder (default) | next to the GUI | `/etc/dnscrypt-proxy` | `/etc/dnscrypt-proxy` (or `/usr/local/etc/dnscrypt-proxy` if installed via Homebrew) |
 
 Both locations are configurable in the **Configuration → System Paths** section -
-set them once and they persist in `settings.json`.
+set them once and they persist in `settings.json`. The detected engine's
+version is shown on the same tab once the proxy becomes available.
 
 ---
 

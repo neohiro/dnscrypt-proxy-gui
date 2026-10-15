@@ -52,6 +52,28 @@ class FakeVar:
         self._value = value
 
 
+class _RecordingButton:
+    """Minimal stand-in for ttk.Button used by the test suite.
+
+    Records the most recent `state=` argument passed to `config()` so tests
+    can assert on button enable/disable transitions. Keyword arguments
+    other than `state` and `text` are silently ignored - matches the subset
+    of ttk.Button.config() used by the production code.
+    """
+
+    def __init__(self):
+        self.last_state = None
+        self.last_text = None
+        self.config_calls = []
+
+    def config(self, state=None, text=None, **_):
+        if state is not None:
+            self.last_state = state
+        if text is not None:
+            self.last_text = text
+        self.config_calls.append((state, text))
+
+
 def make_gui():
     """Build a bare GUI instance with pure-function dependencies injected."""
     gui = object.__new__(DNSCryptClientGUI)
@@ -83,6 +105,19 @@ def make_gui():
     gui.startup_var = FakeVar(False)
     gui.proxy_path_var = FakeVar("")
     gui.config_dir_var = FakeVar("")
+    gui.engine_version = ""
+    gui._version_probe_thread = None
+    gui._engine_update_url = None
+    gui._engine_release_tag = ""
+    gui._engine_release_url = ""
+    gui._gui_release_etag = ""
+    gui._gui_cached_release_tag = ""
+    gui._gui_cached_release_url = ""
+    gui._engine_release_etag = ""
+    gui.status_var = FakeVar("")
+    gui.style = type("S", (), {"lookup": staticmethod(lambda *a, **k: "")})()
+    gui.activate_button = _RecordingButton()
+    gui.restart_button = _RecordingButton()
     return gui
 
 
